@@ -1,0 +1,200 @@
+Delivery Agent App - Detailed Feature Specification (Performance-Optimized with Faster Data Structures)
+Project: Dairy Factory Management System (DFMS) - Delivery Agent Mobile App
+Platform: React Native (Cross-platform for Android/iOS)
+Backend: AWS Services (API Gateway + Lambda for serverless APIs, DynamoDB for NoSQL storage with optimized partitioning, S3 for media storage, Cognito for authentication, AppSync for GraphQL realtime with efficient subscriptions, CloudWatch for monitoring)
+Date: December 18, 2025
+Version: 1.1 (MVP with core features; now enhanced for performance using faster data structures like Maps/Sets for O(1) lookups, IndexedDB via Realm for local caching, and DynamoDB Global Secondary Indexes (GSIs) for sub-second queries)
+This updated specification builds on the previous version by integrating faster data structures throughout the features to achieve near-zero latency. Key optimizations include:
+
+Frontend: Use Map and Set for quick lookups (e.g., shop IDs in routes); FlatList with useMemo for virtualized lists; Redux with normalized state (by ID) for O(1) entity access.
+Local Storage: Realm with indexed schemas for fast offline queries (e.g., indexed deliveries by status).
+Backend: DynamoDB GSIs for route/delivery lookups; Lambda warm starts with in-memory caches (e.g., Redis via ElastiCache for session data).
+Overall: RTK Query for intelligent caching (stale-while-revalidate); optimistic updates with rollback using transient Sets to track pending changes.
+
+These ensure <100ms UI responsiveness, even offline, while reducing AWS costs via efficient queries (e.g., 50% fewer reads via GSIs).
+The app uses React Native for a native-like UI/UX with Expo for rapid development and over-the-air updates. Backend leverages AWS for scalability:
+
+Authentication: AWS Cognito (JWT tokens, role-based access).
+API Layer: AWS API Gateway + Lambda (Node.js handlers for REST/GraphQL endpoints with Map-based caching).
+Database: DynamoDB (partitioned tables with GSIs for high-throughput reads/writes on deliveries/routes; e.g., GSI on routeId-status for O(1) progress queries).
+Storage: S3 for photos/receipts/proofs (with presigned URLs for direct uploads).
+Realtime: AWS AppSync with GraphQL subscriptions (optimized resolvers using Sets for filtering).
+Offline Support: Realm (with compound indexes) or AsyncStorage for local caching, with conflict resolution on sync.
+Security: HTTPS, encrypted local data (Realm encryption), Cognito MFA.
+Analytics: AWS Pinpoint for user behavior tracking (aggregated via Sets to avoid duplicates).
+
+App navigation uses React Navigation (bottom tabs for main sections: Dashboard, Routes, Deliveries, Payments, Reports). UI library: NativeBase or Tamagui for responsive components. State management: Redux Toolkit with RTK Query for API caching/optimism, normalized with Map-based reducers for fast merges.
+
+Core App-Wide Features
+These apply across all screens/modules for consistency and usability, with data structure optimizations for speed.
+
+Authentication & Onboarding
+Secure login via Cognito (email/phone + OTP; supports biometric unlock).
+Role verification: Only 'delivery_agent' role granted access; redirects to Admin if mismatched. Use a Set of valid roles in Redux for O(1) checks.
+Onboarding tour (one-time): Swipe-through screens explaining key flows (e.g., "Mark Delivery" animation).
+Profile management: View/edit personal details (name, phone, assigned routes); force logout option. Store profile in a normalized Redux Map for instant access.
+Session persistence: Auto-login on app reopen; token refresh via Cognito.
+
+Offline Mode & Sync
+Local storage (Realm DB with indexed schemas, e.g., index on delivery.status and route.id for <10ms queries) for queued actions (e.g., deliveries, payments) when offline.
+Background sync on reconnect (via NetInfo library); optimistic UI updates with rollback on failure, using a transient Set in Redux to track unsynced IDs.
+Sync indicators: Progress bar for pending items; error alerts for conflicts (e.g., duplicate delivery, resolved via last-write-wins with timestamp Map).
+Data retention: 7 days offline; auto-purge synced items using Realm's efficient bulk delete.
+
+Notifications & Alerts
+Push notifications via AWS SNS (e.g., new route assigned, low stock warning, payment due).
+In-app banners for urgent alerts (e.g., "Shop X payment overdue"). Use a Set for deduplicated alert IDs to prevent spam.
+Customizable: Toggle sound/vibration; mark as read.
+
+UI/UX & Accessibility
+Dark/Light mode toggle.
+Multi-language: English/Hindi (via i18n-js; RTL support for future).
+Accessibility: VoiceOver/Screen Reader compatible; large text scaling.
+GPS Integration: Background location tracking (with permission prompts); geofencing for auto-check-in at shops, using a Map<latLng, shopId> for O(1) nearest-shop lookups.
+
+Security & Compliance
+Data encryption: Local DB encrypted (Realm); API calls signed with Cognito tokens.
+Audit logging: All actions (e.g., delivery mark) logged to AWS CloudWatch; immutable trail using DynamoDB streams to a Set-based aggregator Lambda.
+GDPR compliance: Data export/delete on request; anonymized analytics via hashed Set of events.
+
+
+
+Detailed Modules & Features
+1. Route Management
+Purpose: Efficiently handle assigned routes, including customization for flexibility. Use Map<routeId, stopsSet> for O(1) shop lookups.
+Screens: Route List (tab, FlatList with keyExtractor), Route Editor (modal).
+
+Route Assignment Viewing
+Display daily/weekly routes in a calendar view (react-native-calendars) or list with cards.
+Filters: By date, area (road-wise), status (assigned/pending/completed). Use RTK Query cache with Map normalization for instant filter results.
+Details per route: Agent name, start/end time, total shops (e.g., 15 stops, 200km).
+Real-time updates: Subscribe to AWS AppSync for route changes (e.g., reassignment push); update local Set of active routes for <50ms refresh.
+
+Route Customization
+Add/remove shops: Drag-and-drop reordering; search/add from master shop list (fetched via API, cached in Map<shopId, details>).
+Area-based grouping: Map view (react-native-maps) showing shops by geo-fence; optimize route with AWS Location Service (shortest path algo, results stored in indexed Realm array).
+Notes/Preferences: Add shop-specific notes (e.g., "Call before arrival"); save as template for recurring routes using a Set of template IDs.
+Validation: API call to Lambda to check shop availability and update route JSON in DynamoDB (GSI on agentId-date for fast assigns).
+
+Route Progress Tracking
+Live progress bar: % completed (e.g., 7/15 shops); ETA calculation via GPS, using a Map<stopId, timestamp> for quick delta computations.
+Check-in/Check-out: Auto-log arrival/departure with timestamp/GPS photo.
+Exceptions: Flag route delays (e.g., traffic); notify admin via push, queued in offline Set.
+
+
+2. Goods Dispatch & Delivery
+Purpose: Receive, track, and confirm product dispatches with inventory auto-sync. Use Set for pending deliveries to avoid duplicates.
+Screens: Dispatch Inbox (list, virtualized FlatList), Delivery Detail (stepper UI).
+
+Dispatch Receiving
+Inbox for incoming dispatches: List from manufacturer (e.g., "Batch #123: 50L Milk, 20kg Ghee").
+Scan/Verify: QR code scan (react-native-qrcode-scanner) for batch confirmation; mismatch alert. Cache batches in Map<batchId, items>.
+Load Confirmation: Checkbox list of items; photo upload to S3 for proof-of-loading.
+Acceptance: Swipe-to-accept; reject with reason (e.g., "Damaged goods") → API update to admin.
+
+Delivery Execution
+Shop Arrival: Auto-detect via GPS; manual check-in button.
+Item Delivery Marking: Per-item status (Delivered/Returned/Pending) with quantity adjustment (e.g., partial delivery), tracked in local Set<deliveredItemIds>.
+Proof Capture: Mandatory photo (before/after delivery) uploaded to S3; digital signature pad (react-native-signature-capture).
+Return Handling: Log returned items (reason dropdown: damaged/expired/overstock); auto-deduct from inventory via Lambda trigger (DynamoDB GSI on status).
+
+Inventory Auto-Update
+On mark-delivered: API POST to Lambda → Update DynamoDB inventory (e.g., decrement qty); realtime broadcast to admin via AppSync (resolver filters with Set).
+Bulk Actions: Multi-select for complete route; one-tap "All Delivered" with photo batch upload, using Map for batch processing.
+Error Handling: Offline queue (Realm indexed by syncStatus); retry sync with exponential backoff.
+
+
+3. Sales & Order Management
+Purpose: Record transactions per shop with full traceability. Normalize sales in Redux Map<invoiceId, order>.
+Screens: Sales Log (table, FastList), Order History (searchable list with indexed Realm query).
+
+Sales Recording
+Per-Shop Sales: Generate invoice # (auto via Lambda); itemized list with prices/taxes (pulled from master data, cached in Map<productId, price>).
+Order Taking: Upsell suggestions (e.g., "Add 5kg Paneer?"); custom order notes.
+Totals Calculation: Auto-sum with discounts/taxes; preview PDF (react-native-pdf-lib) for on-spot print (Bluetooth via react-native-thermal-printer). Use Set for unique items to avoid double-counts.
+
+Returns & Damages
+Return Logging: Photo evidence to S3; reason categorization (e.g., "Quality issue"); credit note generation.
+Damage Reporting: Inline form with qty/impact; auto-flag to admin for QC review.
+History View: Filter by shop/date; aggregate returns % for performance insights, computed via Realm aggregation on indexed fields.
+
+Sales Tracking
+Daily/Monthly Totals: Dashboard widget with charts (victory-native); targets vs. actual (e.g., "85% of quota").
+Export: Share CSV summary via email/WhatsApp integration, generated from Map-iterated data.
+
+
+4. Payment Collection
+Purpose: Securely collect and verify payments with multi-mode support. Use Map<paymentId, proofUrl> for quick verification.
+Screens: Payment Collector (modal per shop), Collection History (list).
+
+Multi-Mode Acceptance
+Options: Cash (amount entry), UPI (QR generation via API), Bank Transfer (reference entry).
+UPI Integration: Generate dynamic QR (AWS Lambda + QR code lib); scan confirmation.
+Cash Handling: Digital receipt generation; photo of cash/notes to S3 for audit.
+
+Proof Upload & Verification
+Mandatory Proof: Photo/receipt upload (camera/gallery); auto-crop/enhance with react-native-image-picker.
+Validation: OCR via AWS Textract (optional: extract amount/date for auto-fill). Cache proofs in local Set for offline review.
+Pending Approval: Mark as "Submitted"; admin approval via push notification.
+
+Ledger Auto-Update
+On Approval: Lambda trigger → Create ledger entry in DynamoDB (GSI on cleared for reconciliation queries); deduct from shop dues.
+Refunds/Adjustments: Request refund (reason + amount); admin workflow integration.
+Reconciliation: Daily cash tally screen; discrepancies flagged to admin using Set diff for unmatched entries.
+
+
+5. Performance Dashboard
+Purpose: Provide agents with actionable insights into earnings and efficiency. Pre-compute metrics in Redux Map<date, totals>.
+Screens: Home Dashboard (cards + charts).
+
+Key Metrics Overview
+Earnings: Today's total collected (pie chart: cash/UPI/bank); pending payments list.
+Delivery Stats: Pending/completed count; on-time % (GPS-based), queried from indexed Realm.
+Pending Items: Collapsible list of overdue deliveries/dues, filtered via Set.
+
+Graphs & Trends
+Weekly/Monthly Views: Line/bar charts (react-native-charts-wrapper) for sales volume, returns rate.
+Goal Tracking: Progress circles (e.g., "Rs. 5,000 target: 70%"); motivational badges.
+Filters: By route/shop; export to PDF.
+
+Personal Insights
+Tips: AI-suggested (via AWS Comprehend: "High returns on Route A—check stock freshness").
+Feedback: Quick thumbs-up/down on routes; submit to admin.
+
+
+6. Daily Reporting
+Purpose: End-of-day closure with automated admin sync. Aggregate from Map-based summaries.
+Screens: Report Generator (form), Report Archive (list).
+
+End-of-Day Summary
+Auto-Generate: Tap "Close Day" → Compile stats (deliveries: 12/15, payments: Rs. 8,500, returns: 2 items) using Realm views for fast sums.
+Custom Additions: Notes/expenses (e.g., fuel cost photo upload).
+Validation: Ensure no pendings; force-resolve if needed.
+
+Report Components
+Sections: Deliveries table, payments breakdown, inventory discrepancies, route map screenshot.
+Attachments: Auto-include photos; PDF export with branding.
+
+Auto-Sync & Archiving
+Upload to S3; API POST to admin ledger/DynamoDB.
+History: Searchable archive (by date/agent, via GSI); share via app.
+Compliance: Timestamped digital signature on report.
+
+
+
+Integration & Backend Flows (AWS-Specific, Optimized)
+
+API Endpoints (via API Gateway/Lambda):
+POST /routes/assign (DynamoDB update with GSI).
+PATCH /deliveries/{id}/status (triggers inventory Lambda with in-memory Map cache).
+POST /payments/collect (Cognito auth + S3 upload).
+Realtime: AppSync subscriptions (e.g., onRouteUpdate, filtered with Sets).
+
+Data Flows Example (Delivery Marking):
+Agent taps "Delivered" → Optimistic UI update (Redux Set add).
+Queue API PATCH to Lambda → DynamoDB update (GSI query) + S3 proof store.
+Lambda trigger → Notify admin via SNS; sync inventory (O(1) via partition key).
+On success: Confirm UI; on failure: Rollback + alert (remove from Set).
+
+Error Handling: Retry logic (exponential backoff); offline queue max 100 items, prioritized by indexed Realm.
+
