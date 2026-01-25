@@ -15,7 +15,7 @@ export async function updateSession(request: NextRequest) {
           return request.cookies.getAll()
         },
         setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) => request.cookies.set(name, value))
+          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value))
           supabaseResponse = NextResponse.next({
             request,
           })
@@ -24,22 +24,66 @@ export async function updateSession(request: NextRequest) {
           )
         },
       },
+      auth: {
+        // Disable automatic token refresh in middleware
+        autoRefreshToken: false,
+        persistSession: false,
+        detectSessionInUrl: false,
+      },
     }
   )
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  // Handle authentication with error handling
+  try {
+    const {
+      data: { user },
+      error,
+    } = await supabase.auth.getUser()
 
-  if (
-    !user &&
-    !request.nextUrl.pathname.startsWith('/login') &&
-    !request.nextUrl.pathname.startsWith('/signup') &&
-    !request.nextUrl.pathname.startsWith('/api')
-  ) {
-    const url = request.nextUrl.clone()
-    url.pathname = '/login'
-    return NextResponse.redirect(url)
+    // If there's an error or no user, redirect to login (except for public pages)
+    if (
+      (error || !user) &&
+      !request.nextUrl.pathname.startsWith('/login') &&
+      !request.nextUrl.pathname.startsWith('/signup') &&
+      !request.nextUrl.pathname.startsWith('/api') &&
+      request.nextUrl.pathname !== '/'
+    ) {
+      const url = request.nextUrl.clone()
+      url.pathname = '/login'
+      return NextResponse.redirect(url)
+    }
+
+    // Check if user is trying to access dashboard and verify role
+    if (user && request.nextUrl.pathname.startsWith('/dashboard')) {
+      const { data: appUser } = await supabase
+        .from('app_users')
+        .select('role, status')
+        .eq('auth_uid', user.id)
+        .single()
+
+      // Block delivery agents from admin panel
+      if (appUser?.role === 'delivery_agent' || appUser?.status !== 'active') {
+        const url = request.nextUrl.clone()
+        url.pathname = '/login'
+        return NextResponse.redirect(url)
+      }
+    }
+  } catch (error) {
+    // If there's an error getting the user, allow through to public pages
+    // and let the page handle authentication
+    console.error('Middleware auth error:', error)
+    
+    // Only redirect if NOT on a public page
+    if (
+      !request.nextUrl.pathname.startsWith('/login') &&
+      !request.nextUrl.pathname.startsWith('/signup') &&
+      !request.nextUrl.pathname.startsWith('/api') &&
+      request.nextUrl.pathname !== '/'
+    ) {
+      const url = request.nextUrl.clone()
+      url.pathname = '/login'
+      return NextResponse.redirect(url)
+    }
   }
 
   return supabaseResponse

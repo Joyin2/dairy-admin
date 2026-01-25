@@ -1,9 +1,45 @@
-import { createClient } from '@/lib/supabase/server'
-import Link from 'next/link'
+'use client'
 
-export default async function ProductsPage() {
-  const supabase = await createClient()
-  const { data: products } = await supabase.from('products').select('*').order('created_at', { ascending: false })
+import { createClient } from '@/lib/supabase/client'
+import Link from 'next/link'
+import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
+
+export default function ProductsPage() {
+  const router = useRouter()
+  const supabase = createClient()
+  const [products, setProducts] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [deleting, setDeleting] = useState<string | null>(null)
+
+  useEffect(() => {
+    loadProducts()
+  }, [])
+
+  const loadProducts = async () => {
+    const { data } = await supabase.from('products').select('*').order('created_at', { ascending: false })
+    setProducts(data || [])
+    setLoading(false)
+  }
+
+  const handleDelete = async (id: string, name: string) => {
+    if (!confirm(`Are you sure you want to delete "${name}"?`)) return
+    
+    setDeleting(id)
+    try {
+      const { error } = await supabase.from('products').delete().eq('id', id)
+      if (error) throw error
+      setProducts(products.filter(product => product.id !== id))
+    } catch (err: any) {
+      alert('Failed to delete: ' + err.message)
+    } finally {
+      setDeleting(null)
+    }
+  }
+
+  if (loading) {
+    return <div className="text-center py-12">Loading...</div>
+  }
 
   return (
     <div className="space-y-6">
@@ -23,9 +59,18 @@ export default async function ProductsPage() {
               <p className="text-sm text-gray-600 mb-1">SKU: {product.sku || 'N/A'}</p>
               <p className="text-sm text-gray-600 mb-1">Unit: {product.uom}</p>
               <p className="text-sm text-gray-600 mb-4">Shelf Life: {product.shelf_life_days || 'N/A'} days</p>
-              <Link href={`/dashboard/products/${product.id}`} className="text-blue-600 hover:text-blue-800 text-sm font-medium">
-                Edit →
-              </Link>
+              <div className="flex gap-3">
+                <Link href={`/dashboard/products/${product.id}`} className="text-blue-600 hover:text-blue-800 text-sm font-medium">
+                  Edit →
+                </Link>
+                <button
+                  onClick={() => handleDelete(product.id, product.name)}
+                  disabled={deleting === product.id}
+                  className="text-red-600 hover:text-red-800 text-sm font-medium disabled:opacity-50"
+                >
+                  {deleting === product.id ? 'Deleting...' : 'Delete'}
+                </button>
+              </div>
             </div>
           ))
         ) : (

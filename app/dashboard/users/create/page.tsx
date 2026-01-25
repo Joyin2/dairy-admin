@@ -13,7 +13,7 @@ export default function CreateUserPage() {
     password: '',
     name: '',
     phone: '',
-    role: 'manufacturer' as 'company_admin' | 'manufacturer' | 'delivery_agent',
+    role: 'delivery_agent' as 'company_admin' | 'admin' | 'delivery_agent',
     status: 'active',
   })
   const [loading, setLoading] = useState(false)
@@ -79,7 +79,7 @@ export default function CreateUserPage() {
               required
               value={formData.email}
               onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
             />
           </div>
 
@@ -93,7 +93,7 @@ export default function CreateUserPage() {
               minLength={6}
               value={formData.password}
               onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
             />
           </div>
 
@@ -106,7 +106,7 @@ export default function CreateUserPage() {
               required
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
             />
           </div>
 
@@ -116,7 +116,7 @@ export default function CreateUserPage() {
               type="tel"
               value={formData.phone}
               onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
             />
           </div>
 
@@ -127,11 +127,10 @@ export default function CreateUserPage() {
             <select
               value={formData.role}
               onChange={(e) => setFormData({ ...formData, role: e.target.value as any })}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
             >
-              <option value="company_admin">Company Admin</option>
-              <option value="manufacturer">Manufacturer</option>
               <option value="delivery_agent">Delivery Agent</option>
+              <option value="manufacturer">Factory Manager</option>
             </select>
           </div>
 
@@ -140,7 +139,7 @@ export default function CreateUserPage() {
             <select
               value={formData.status}
               onChange={(e) => setFormData({ ...formData, status: e.target.value })}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
             >
               <option value="active">Active</option>
               <option value="inactive">Inactive</option>

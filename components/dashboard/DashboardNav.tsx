@@ -28,7 +28,6 @@ export default function DashboardNav({ user }: DashboardNavProps) {
     { name: 'Shops', href: '/dashboard/shops', icon: '🏪' },
     { name: 'Products', href: '/dashboard/products', icon: '📦' },
     { name: 'Collections', href: '/dashboard/collections', icon: '🥛' },
-    { name: 'Batches', href: '/dashboard/batches', icon: '🏭' },
     { name: 'Inventory', href: '/dashboard/inventory', icon: '📊' },
     { name: 'Routes', href: '/dashboard/routes', icon: '🗺️' },
     { name: 'Deliveries', href: '/dashboard/deliveries', icon: '🚚' },

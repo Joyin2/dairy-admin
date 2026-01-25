@@ -13,12 +13,15 @@ export default function EditUserPage() {
     name: '',
     email: '',
     phone: '',
-    role: 'manufacturer' as 'company_admin' | 'manufacturer' | 'delivery_agent',
+    role: 'delivery_agent' as 'company_admin' | 'admin' | 'delivery_agent',
     status: 'active',
   })
+  const [authUid, setAuthUid] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [fetching, setFetching] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [resetPasswordDialog, setResetPasswordDialog] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
 
   useEffect(() => {
     const fetchUser = async () => {
@@ -38,6 +41,7 @@ export default function EditUserPage() {
           role: data.role,
           status: data.status,
         })
+        setAuthUid(data.auth_uid)
       }
       setFetching(false)
     }
@@ -67,6 +71,42 @@ export default function EditUserPage() {
       router.refresh()
     } catch (err: any) {
       setError(err.message || 'Failed to update user')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleResetPassword = async () => {
+    if (!newPassword || newPassword.length < 6) {
+      setError('Password must be at least 6 characters')
+      return
+    }
+
+    if (!authUid) {
+      setError('User auth ID not found')
+      return
+    }
+
+    setLoading(true)
+    setError(null)
+
+    try {
+      // Call Supabase Edge Function or use admin API to reset password
+      const response = await fetch('/api/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ authUid, newPassword }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) throw new Error(data.error || 'Failed to reset password')
+
+      setResetPasswordDialog(false)
+      setNewPassword('')
+      alert('Password reset successfully')
+    } catch (err: any) {
+      setError(err.message || 'Failed to reset password')
     } finally {
       setLoading(false)
     }
@@ -157,9 +197,8 @@ export default function EditUserPage() {
               onChange={(e) => setFormData({ ...formData, role: e.target.value as any })}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
             >
-              <option value="company_admin">Company Admin</option>
-              <option value="manufacturer">Manufacturer</option>
               <option value="delivery_agent">Delivery Agent</option>
+              <option value="manufacturer">Factory Manager</option>
             </select>
           </div>
 
@@ -185,6 +224,14 @@ export default function EditUserPage() {
             </button>
             <button
               type="button"
+              onClick={() => setResetPasswordDialog(true)}
+              disabled={loading || !authUid}
+              className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-2 rounded-lg font-medium transition-colors disabled:opacity-50"
+            >
+              Reset Password
+            </button>
+            <button
+              type="button"
               onClick={() => router.back()}
               className="bg-gray-200 hover:bg-gray-300 text-gray-800 px-6 py-2 rounded-lg font-medium transition-colors"
             >
@@ -201,6 +248,55 @@ export default function EditUserPage() {
           </div>
         </form>
       </div>
+
+      {/* Reset Password Dialog */}
+      {resetPasswordDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Reset Password</h3>
+            
+            {error && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4 text-sm">
+                {error}
+              </div>
+            )}
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                New Password <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                placeholder="Enter new password (min 6 characters)"
+              />
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={handleResetPassword}
+                disabled={loading}
+                className="flex-1 bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50"
+              >
+                {loading ? 'Resetting...' : 'Reset Password'}
+              </button>
+              <button
+                onClick={() => {
+                  setResetPasswordDialog(false)
+                  setNewPassword('')
+                  setError(null)
+                }}
+                disabled={loading}
+                className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 px-4 py-2 rounded-lg font-medium transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -36,11 +36,18 @@ export default function CreateCollectionPage() {
     try {
       const { data: { user } } = await supabase.auth.getUser()
       
+      // Get app_users.id from auth_uid
+      const { data: appUser } = await supabase
+        .from('app_users')
+        .select('id')
+        .eq('auth_uid', user?.id)
+        .single()
+      
       const { error: insertError } = await supabase
         .from('milk_collections')
         .insert({
           supplier_id: formData.supplier_id,
-          operator_user_id: user?.id,
+          operator_user_id: appUser?.id,
           qty_liters: parseFloat(formData.qty_liters),
           fat: formData.fat ? parseFloat(formData.fat) : null,
           snf: formData.snf ? parseFloat(formData.snf) : null,
@@ -80,7 +87,7 @@ export default function CreateCollectionPage() {
               required
               value={formData.supplier_id}
               onChange={(e) => setFormData({ ...formData, supplier_id: e.target.value })}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
             >
               <option value="">Select Supplier</option>
               {suppliers.map((supplier) => (
@@ -102,7 +109,7 @@ export default function CreateCollectionPage() {
                 required
                 value={formData.qty_liters}
                 onChange={(e) => setFormData({ ...formData, qty_liters: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
               />
             </div>
 
@@ -113,7 +120,7 @@ export default function CreateCollectionPage() {
                 step="0.01"
                 value={formData.fat}
                 onChange={(e) => setFormData({ ...formData, fat: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
               />
             </div>
 
@@ -124,7 +131,7 @@ export default function CreateCollectionPage() {
                 step="0.01"
                 value={formData.snf}
                 onChange={(e) => setFormData({ ...formData, snf: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
               />
             </div>
           </div>
@@ -135,7 +142,7 @@ export default function CreateCollectionPage() {
               type="url"
               value={formData.photo_url}
               onChange={(e) => setFormData({ ...formData, photo_url: e.target.value })}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
               placeholder="https://..."
             />
           </div>
@@ -145,7 +152,7 @@ export default function CreateCollectionPage() {
             <select
               value={formData.qc_status}
               onChange={(e) => setFormData({ ...formData, qc_status: e.target.value as any })}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
             >
               <option value="pending">Pending</option>
               <option value="approved">Approved</option>

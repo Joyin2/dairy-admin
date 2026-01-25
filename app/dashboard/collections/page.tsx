@@ -1,14 +1,75 @@
-import { createClient } from '@/lib/supabase/server'
+'use client'
+
+import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
+import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 
-export default async function CollectionsPage() {
-  const supabase = await createClient()
+export default function CollectionsPage() {
+  const router = useRouter()
+  const supabase = createClient()
+  const [collections, setCollections] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [deleting, setDeleting] = useState<string | null>(null)
 
-  const { data: collections } = await supabase
-    .from('milk_collections')
-    .select('*, suppliers(name), app_users(name)')
-    .order('created_at', { ascending: false })
-    .limit(50)
+  useEffect(() => {
+    loadCollections()
+  }, [])
+
+  const loadCollections = async () => {
+    const { data } = await supabase
+      .from('milk_collections')
+      .select('*, suppliers(name), app_users(name)')
+      .order('created_at', { ascending: false })
+      .limit(50)
+    setCollections(data || [])
+    setLoading(false)
+  }
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this collection?')) return
+    
+    setDeleting(id)
+    try {
+      // First delete from pool_collections if it references this collection
+      await supabase
+        .from('pool_collections')
+        .delete()
+        .eq('collection_id', id)
+      
+      // Then delete the collection
+      const { error } = await supabase.from('milk_collections').delete().eq('id', id)
+      if (error) throw error
+      setCollections(collections.filter(c => c.id !== id))
+    } catch (err: any) {
+      alert('Failed to delete: ' + err.message)
+    } finally {
+      setDeleting(null)
+    }
+  }
+
+  const handleApprove = async (id: string) => {
+    const { error } = await supabase
+      .from('milk_collections')
+      .update({ qc_status: 'approved' })
+      .eq('id', id)
+    if (!error) {
+      setCollections(collections.map(c => c.id === id ? { ...c, qc_status: 'approved' } : c))
+    }
+  }
+
+  const handleReject = async (id: string) => {
+    if (!confirm('Reject this collection?')) return
+    const { error } = await supabase
+      .from('milk_collections')
+      .update({ qc_status: 'rejected' })
+      .eq('id', id)
+    if (!error) {
+      setCollections(collections.map(c => c.id === id ? { ...c, qc_status: 'rejected' } : c))
+    }
+  }
+
+  if (loading) return <div className="text-center py-12">Loading...</div>
 
   return (
     <div className="space-y-6">
@@ -55,7 +116,8 @@ export default async function CollectionsPage() {
 
       {/* Collections Table */}
       <div className="bg-white rounded-lg shadow overflow-hidden">
-        <table className="min-w-full divide-y divide-gray-200">
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date/Time</th>
@@ -109,12 +171,37 @@ export default async function CollectionsPage() {
                     </span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
-                    <Link
-                      href={`/dashboard/collections/${collection.id}`}
-                      className="text-blue-600 hover:text-blue-900 mr-3"
-                    >
-                      View
-                    </Link>
+                    <div className="flex justify-end gap-2">
+                      {collection.qc_status === 'pending' && (
+                        <>
+                          <button
+                            onClick={() => handleApprove(collection.id)}
+                            className="text-green-600 hover:text-green-900 font-medium"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            onClick={() => handleReject(collection.id)}
+                            className="text-yellow-600 hover:text-yellow-900 font-medium"
+                          >
+                            Reject
+                          </button>
+                        </>
+                      )}
+                      <Link
+                        href={`/dashboard/collections/${collection.id}`}
+                        className="text-blue-600 hover:text-blue-900"
+                      >
+                        View
+                      </Link>
+                      <button
+                        onClick={() => handleDelete(collection.id)}
+                        disabled={deleting === collection.id}
+                        className="text-red-600 hover:text-red-900 disabled:opacity-50"
+                      >
+                        {deleting === collection.id ? 'Deleting...' : 'Delete'}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))
@@ -127,6 +214,7 @@ export default async function CollectionsPage() {
             )}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   )

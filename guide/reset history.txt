@@ -1,0 +1,342 @@
+Perfect — you want **POOL RESET = close the old book + open a new book**, exactly like real dairy or factory accounts.
+
+Let me design a **full, clean, professional “Book Maintenance System”** for your Milk Pool resets — with identifiable records, filters, history lists, snapshots, and drill-downs.
+
+This design will work perfectly with **Next.js + Supabase**.
+
+---
+
+# ✅ **FINAL SYSTEM: “Milk Pool Books”**
+
+Think of each Milk Pool cycle as a **Book**.
+
+* **Active Book** = your current pool
+* **Closed Book** = your previous pool (after Reset)
+* **Each Reset → creates a new Book**
+
+This gives you perfect audit trail, historical lookup, and filtering.
+
+---
+
+# 1️⃣ WHAT HAPPENS ON RESET (FULL FLOW)
+
+### When Admin clicks **RESET POOL**:
+
+### ✔️ Step 1 — Archive EVERYTHING into a new “Book Record”
+
+Store in **milk_pool_books table**:
+
+* Book ID (auto)
+* Period name (auto or manual)
+* Opening liters (starting pool)
+* Opening fat units
+* Closing liters
+* Closing fat units
+* Total milk used
+* Total fat used
+* Final avg fat when closing
+* Total inventory produced
+* Usage history snapshot (JSON)
+* Inventory outputs snapshot (JSON)
+* Started at
+* Closed at
+* Closed by (admin user)
+
+### ✔️ Step 2 — Mark current pool as “CLOSED”
+
+```
+status = 'archived'
+reset_at = now()
+```
+
+### ✔️ Step 3 — Create a brand new empty pool
+
+```
+status = 'active'
+all values = 0
+```
+
+### ✔️ Step 4 — UI refreshes and shows empty numbers
+
+```
+Total Milk: 0
+Original Avg Fat: 0
+Remaining Milk: 0
+Current Avg Fat: 0
+```
+
+---
+
+# 2️⃣ TABLE DESIGN (PRODUCTION READY)
+
+## A) **milk_pool** (ALWAYS 1 active pool)
+
+```
+id
+total_milk_liters
+total_fat_units
+original_avg_fat
+remaining_milk_liters
+remaining_fat_units
+current_avg_fat
+status (active / archived)
+created_at
+reset_at
+```
+
+---
+
+## B) **milk_usage** (usage in active pool)
+
+```
+id
+milk_pool_id
+used_liters
+manual_fat_percent
+used_fat_units
+notes
+created_at
+```
+
+---
+
+## C) **inventory_items**
+
+```
+id
+usage_id
+product_name
+quantity
+unit
+created_at
+```
+
+---
+
+## D) **milk_pool_books** (THE HISTORY “BOOKS”)
+
+This is the main history table.
+
+```
+book_id (PK)
+pool_id (FK)
+book_name (optional, like "January Pool" or auto)
+opening_total_liters
+opening_fat_units
+closing_total_liters
+closing_fat_units
+closing_avg_fat
+
+total_milk_used
+total_fat_used
+
+usage_history_json (JSON)
+inventory_history_json (JSON)
+
+created_at
+closed_at
+closed_by (admin user)
+```
+
+This table gives COMPLETE traceability.
+
+---
+
+# 3️⃣ HOW TO GENERATE IDENTIFIABLE BOOKS
+
+When admin clicks reset:
+
+### Book Name Auto Rules
+
+You can auto-name books in any of these formats:
+
+* `"POOL-BOOK-#{{running_number}}"`
+* `"Pool Ledger ({{created_date}} → {{reset_date}})"`
+* `"Cycle {{YYYYMMDD_HHMM}}"`
+* `"Pool Session #{{increment}}"`
+
+Example:
+
+```
+Pool Book #12 (2026-01-10 → 2026-02-02)
+```
+
+### Filters Available:
+
+You can filter books by:
+
+* date range
+* month-year
+* remaining milk
+* avg fat
+* user who closed it
+* output product types
+* milk usage amounts
+
+---
+
+# 4️⃣ FRONT-END UI DESIGN (ADMIN PANEL)
+
+### 📘 **PAGE: Milk Pool Books (Entire History)**
+
+#### **Sidebar: Active Pool**
+
+Always shows the current pool.
+
+---
+
+### 📚 **Table: Closed Pools History**
+
+| Book ID | Period | Opening Milk | Closing Milk | Avg Fat | Inventory Items | Closed At | View |
+| ------- | ------ | ------------ | ------------ | ------- | --------------- | --------- | ---- |
+
+#### Filters at top:
+
+* Date range
+* Book ID
+* Fat range
+* Milk usage
+* Created by / Closed by
+* Product type filters
+
+---
+
+### 📖 **On Click “View” → Book Details Page**
+
+This will show:
+
+### SECTION 1 — Basic Info
+
+```
+Pool Book #12
+From: 10 Jan 2026  
+To:   1 Feb 2026  
+Closed by: Admin Joyin
+```
+
+### SECTION 2 — Summary
+
+```
+Opening Milk: 200 L
+Closing Milk: 15 L
+Milk Used: 185 L
+
+Opening Fat Units: 700
+Closing Fat Units: 50
+Fat Used: 650 units
+```
+
+### SECTION 3 — Usage History Table
+
+| Date | Liters Used | Fat % | Fat Units | Notes |
+
+### SECTION 4 — Inventory Produced
+
+| Product | Qty | Unit | From Usage ID |
+
+### SECTION 5 — JSON Snapshot (raw saved data)
+
+---
+
+# 5️⃣ RESET LOGIC IN DETAIL (THE BUTTON FUNCTION)
+
+### When clicking Reset:
+
+Backend:
+
+```ts
+async function resetMilkPool() {
+  const pool = await getActivePool();
+
+  const usage = await getUsageByPool(pool.id);
+  const inventory = await getInventoryByPool(pool.id);
+
+  const book = {
+     pool_id: pool.id,
+     opening_total_liters: pool.total_milk_liters,
+     opening_fat_units: pool.total_fat_units,
+     closing_total_liters: pool.remaining_milk_liters,
+     closing_fat_units: pool.remaining_fat_units,
+     closing_avg_fat: pool.current_avg_fat,
+
+     total_milk_used: pool.total_milk_liters - pool.remaining_milk_liters,
+     total_fat_used: pool.total_fat_units - pool.remaining_fat_units,
+
+     usage_history_json: usage,
+     inventory_history_json: inventory,
+
+     closed_by: adminUserId,
+     created_at: pool.created_at,
+     closed_at: new Date()
+  };
+
+  await insertBookRecord(book);
+
+  await archivePool(pool.id);
+
+  await createNewEmptyPool();
+}
+```
+
+---
+
+# 6️⃣ WHAT USERS SEE AFTER RESET
+
+### Immediately:
+
+#### Pool is reset:
+
+```
+Total Milk: 0.00 L
+Original Avg Fat: 0%
+Remaining Milk: 0.00 L
+Current Avg Fat: 0%
+Fat Units Left: 0
+```
+
+#### History now shows:
+
+```
+Pool Book #12: (2026 Jan 10 → 2026 Feb 1)
+```
+
+---
+
+# 7️⃣ WHY THIS IS PERFECT FOR YOUR PROJECT
+
+✔️ Complete **audit safety**
+✔️ Dairy-style **ledger books**
+✔️ All history preserved
+✔️ Perfect for refunds/quality issues/production checks
+✔️ Milk math never breaks
+✔️ You can always view previous pools in UI
+✔️ Filters allow quick searching
+✔️ Reset = clean fresh cycle
+✔️ No batch system needed
+✔️ Users get a clean interface
+
+---
+
+# 8️⃣ OPTIONAL (if you want me to generate next):
+
+### I can generate:
+
+#### ✅ SQL schema for all tables
+
+#### ✅ Supabase Edge Functions for reset logic
+
+#### ✅ Next.js UI (with code) for:
+
+* History page
+* Active pool view
+* Book details view
+
+Just tell me:
+
+**“Give me the SQL”**
+or
+**“Give me the Edge Function code”**
+or
+**“Give me the UI page design”**
+
+And I will generate it fully.

@@ -1,0 +1,248 @@
+Got it 👍
+This is a **mass-balance problem** (very common in dairy plants), and your idea is **correct and realistic**. I’ll explain it **clearly**, **mathematically correct**, and **implementation-ready** for **Next.js + Supabase**.
+
+You want **dynamic fat adjustment** while always preserving the **original overall average fat** of the total milk.
+
+---
+
+# 1️⃣ Core concept (very important)
+
+Think of milk fat like **money**.
+
+* Milk quantity = liters
+* Fat % = concentration
+* **Total fat units = liters × fat%**
+
+👉 **Total fat units never change** unless milk is added or removed.
+
+Your system must **track fat units**, not just fat percentage.
+
+---
+
+# 2️⃣ Step 1: When milk is collected (mix everything)
+
+Every collection may have different fat %.
+
+### Example collections
+
+| Supplier | Qty (L) | Fat % |
+| -------- | ------- | ----- |
+| A        | 100     | 4.0   |
+| B        | 50      | 3.5   |
+| C        | 150     | 4.5   |
+
+### Calculate total fat units
+
+```
+fat units = quantity × fat%
+```
+
+| Supplier | Fat units       |
+| -------- | --------------- |
+| A        | 100 × 4.0 = 400 |
+| B        | 50 × 3.5 = 175  |
+| C        | 150 × 4.5 = 675 |
+
+**Total milk = 300 L**
+**Total fat units = 1250**
+
+### Original average fat (VERY IMPORTANT)
+
+```
+avg_fat = total_fat_units / total_milk
+avg_fat = 1250 / 300 = 4.1667%
+```
+
+🔒 **Store this as `original_avg_fat`**
+
+---
+
+# 3️⃣ Database fields you MUST store
+
+In your **milk_pool / batch_pool** table:
+
+```text
+total_milk_liters
+total_fat_units
+original_avg_fat
+current_milk_liters
+```
+
+⚠️ Never lose `total_fat_units`
+⚠️ Never overwrite `original_avg_fat`
+
+---
+
+# 4️⃣ Step 2: Admin manually sets fat % while using milk
+
+Now the Admin says:
+
+> “I want to use milk at **4.0% fat**”
+
+### Example usage
+
+* Using **100 L** at **4.0%**
+
+### Fat units consumed
+
+```
+used_fat_units = 100 × 4.0 = 400
+```
+
+### Remaining milk
+
+```
+remaining_milk = 300 - 100 = 200 L
+remaining_fat_units = 1250 - 400 = 850
+```
+
+### System auto-adjusts remaining fat %
+
+```
+remaining_avg_fat = 850 / 200 = 4.25%
+```
+
+✅ **System automatically recalculates**
+✅ **Total fat balance preserved**
+
+---
+
+# 5️⃣ Step 3: Admin again changes fat % manually
+
+Now Admin says:
+
+> “Next usage should be **3.8% fat**”
+
+Using **50 L**
+
+### Fat used
+
+```
+50 × 3.8 = 190
+```
+
+### Remaining milk
+
+```
+remaining_milk = 200 - 50 = 150 L
+remaining_fat_units = 850 - 190 = 660
+```
+
+### Auto-adjust again
+
+```
+remaining_avg_fat = 660 / 150 = 4.4%
+```
+
+💡 **Notice:**
+Fat % of remaining milk **automatically increases** to preserve the original average.
+
+---
+
+# 6️⃣ Step 4: IMPORTANT RULE — Reset logic you asked for
+
+> “If I again set fat percentage manually then it should again adjust with the original avg fat percentage”
+
+### Interpretation (correct implementation)
+
+* **Manual fat % only affects the milk being used**
+* **Remaining milk ALWAYS auto-adjusts**
+* System NEVER recalculates based on last adjusted fat
+* It ALWAYS relies on:
+
+```
+remaining_fat_units = original_total_fat_units - sum(used_fat_units)
+```
+
+🔒 This guarantees:
+
+* No cumulative rounding error
+* No drift
+* No cheating of fat balance
+
+---
+
+# 7️⃣ Correct algorithm (backend logic)
+
+### Pseudocode
+
+```js
+function useMilk(useLiters, manualFatPercent) {
+  const usedFatUnits = useLiters * manualFatPercent;
+
+  if (usedFatUnits > remainingFatUnits) {
+    throw new Error("Not enough fat in pool");
+  }
+
+  remainingMilkLiters -= useLiters;
+  remainingFatUnits -= usedFatUnits;
+
+  currentAvgFat = remainingFatUnits / remainingMilkLiters;
+
+  return {
+    remainingMilkLiters,
+    currentAvgFat
+  };
+}
+```
+
+---
+
+# 8️⃣ What to store in DB (critical)
+
+### milk_pool table
+
+```text
+id
+total_milk_liters
+total_fat_units
+original_avg_fat
+remaining_milk_liters
+remaining_fat_units
+```
+
+### milk_usage_log table
+
+```text
+id
+milk_pool_id
+used_liters
+manual_fat_percent
+used_fat_units
+used_at
+used_by
+```
+
+⚠️ **Never recalc original_avg_fat**
+⚠️ **Never update total_fat_units**
+⚠️ Only reduce remaining values
+
+---
+
+# 9️⃣ UI behavior (Admin Panel)
+
+* Show:
+
+  * Original Avg Fat (locked 🔒)
+  * Remaining Milk (L)
+  * Current Avg Fat (auto-calculated)
+* Admin inputs:
+
+  * Quantity to use
+  * Manual fat %
+* On submit:
+
+  * Backend validates
+  * Backend recalculates remaining fat
+  * UI updates instantly (optimistic UI)
+
+---
+
+# 🔥 Why this system is PERFECT
+
+✅ Scientifically correct
+✅ Industry-accurate (used in real dairies)
+✅ No data drift
+✅ Infinite manual adjustments supported
+✅ Easy to audit
+✅ Fast calculations (O(1))

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -18,11 +18,30 @@ export default function SignupPage() {
   const SIGNUP_SECRET = 'DAIRY2026' // Change this to your desired secret code
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [clientReady, setClientReady] = useState(false)
   const router = useRouter()
-  const supabase = createClient()
+  
+  // Create client only once and handle initialization errors
+  const supabase = useMemo(() => {
+    try {
+      const client = createClient()
+      setClientReady(true)
+      return client
+    } catch (err) {
+      console.error('Failed to create Supabase client:', err)
+      setError('Failed to initialize authentication. Please check your internet connection.')
+      return null
+    }
+  }, [])
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault()
+    
+    // Check if client is ready
+    if (!supabase || !clientReady) {
+      setError('Authentication service is not ready. Please refresh the page.')
+      return
+    }
     
     if (formData.secretCode !== SIGNUP_SECRET) {
       setError('Invalid secret code')
@@ -52,7 +71,7 @@ export default function SignupPage() {
       if (authError) throw authError
 
       if (authData.user) {
-        // Create app_users entry
+        // Create app_users entry with pending status
         const { error: dbError } = await supabase
           .from('app_users')
           .insert({
@@ -60,30 +79,31 @@ export default function SignupPage() {
             email: formData.email,
             name: formData.name,
             phone: formData.phone,
-            role: 'manufacturer', // Default role
-            status: 'active',
+            role: 'admin', // Admin role
+            status: 'pending', // Pending approval
           })
 
-        if (dbError) throw dbError
+        if (dbError) {
+          console.error('Failed to create app_users entry:', dbError)
+          // Clean up auth user if app_users insert fails
+          await supabase.auth.admin.deleteUser(authData.user.id).catch(() => {})
+          throw new Error(`Failed to create user profile: ${dbError.message}`)
+        }
 
-        // Auto-login after signup
-        await supabase.auth.signInWithPassword({
-          email: formData.email,
-          password: formData.password,
-        })
+        // Sign out immediately - no auto-login for pending accounts
+        await supabase.auth.signOut()
 
-        // Update last login
-        await supabase
-          .from('app_users')
-          .update({ last_login: new Date().toISOString() })
-          .eq('auth_uid', authData.user.id)
-
-        // Redirect to dashboard
-        router.push('/dashboard')
+        // Redirect to login with pending message
+        router.push('/login?message=pending')
         router.refresh()
       }
     } catch (err: any) {
-      setError(err.message || 'Failed to sign up')
+      console.error('Signup error:', err)
+      if (err.message?.includes('fetch')) {
+        setError('Network error. Please check your internet connection and try again.')
+      } else {
+        setError(err.message || 'Failed to sign up')
+      }
     } finally {
       setLoading(false)
     }
@@ -98,6 +118,11 @@ export default function SignupPage() {
         </div>
 
         <form onSubmit={handleSignup} className="space-y-4">
+          {!clientReady && (
+            <div className="bg-yellow-50 border border-yellow-200 text-yellow-700 px-4 py-3 rounded-lg text-sm">
+              Connecting to authentication service...
+            </div>
+          )}
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
               {error}
@@ -114,7 +139,7 @@ export default function SignupPage() {
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
               required
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 bg-white"
               placeholder="John Doe"
             />
           </div>
@@ -129,7 +154,7 @@ export default function SignupPage() {
               value={formData.email}
               onChange={(e) => setFormData({ ...formData, email: e.target.value })}
               required
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 bg-white"
               placeholder="john@example.com"
             />
           </div>
@@ -143,7 +168,7 @@ export default function SignupPage() {
               type="tel"
               value={formData.phone}
               onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 bg-white"
               placeholder="+1234567890"
             />
           </div>
@@ -158,7 +183,7 @@ export default function SignupPage() {
               value={formData.secretCode}
               onChange={(e) => setFormData({ ...formData, secretCode: e.target.value })}
               required
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 bg-white"
               placeholder="Enter signup secret code"
             />
           </div>
@@ -174,7 +199,7 @@ export default function SignupPage() {
               onChange={(e) => setFormData({ ...formData, password: e.target.value })}
               required
               minLength={6}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 bg-white"
               placeholder="••••••••"
             />
           </div>
@@ -190,17 +215,17 @@ export default function SignupPage() {
               onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
               required
               minLength={6}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 bg-white"
               placeholder="••••••••"
             />
           </div>
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || !clientReady}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? 'Creating Account...' : 'Sign Up'}
+            {loading ? 'Creating Account...' : !clientReady ? 'Connecting...' : 'Sign Up'}
           </button>
         </form>
 

@@ -13,6 +13,15 @@ export default function CreateSupplierPage() {
     phone: '',
     email: '',
     address: '',
+    city: '',
+    state: '',
+    pincode: '',
+    gst_number: '',
+    pan_number: '',
+    contact_person: '',
+    alternate_phone: '',
+    supply_capacity: '',
+    payment_terms: 'immediate',
     kyc_status: 'pending',
     auto_receipt_pref: true,
     bank_account: {
@@ -20,6 +29,7 @@ export default function CreateSupplierPage() {
       ifsc: '',
       bank_name: '',
       account_holder: '',
+      branch: '',
     },
   })
   const [loading, setLoading] = useState(false)
@@ -33,6 +43,13 @@ export default function CreateSupplierPage() {
     try {
       const { data: { user } } = await supabase.auth.getUser()
       
+      // Get app_users.id from auth_uid
+      const { data: appUser } = await supabase
+        .from('app_users')
+        .select('id')
+        .eq('auth_uid', user?.id)
+        .single()
+      
       const { error: insertError } = await supabase
         .from('suppliers')
         .insert({
@@ -40,10 +57,19 @@ export default function CreateSupplierPage() {
           phone: formData.phone,
           email: formData.email,
           address: formData.address,
+          city: formData.city,
+          state: formData.state,
+          pincode: formData.pincode,
+          gst_number: formData.gst_number,
+          pan_number: formData.pan_number,
+          contact_person: formData.contact_person,
+          alternate_phone: formData.alternate_phone,
+          supply_capacity: formData.supply_capacity,
+          payment_terms: formData.payment_terms,
           kyc_status: formData.kyc_status,
           auto_receipt_pref: formData.auto_receipt_pref,
           bank_account: formData.bank_account,
-          created_by: user?.id,
+          created_by: appUser?.id,
         })
 
       if (insertError) throw insertError
@@ -79,17 +105,47 @@ export default function CreateSupplierPage() {
                 required
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
+                placeholder="Enter supplier name"
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Phone</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Contact Person <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={formData.contact_person}
+                onChange={(e) => setFormData({ ...formData, contact_person: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
+                placeholder="Primary contact name"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Phone <span className="text-red-500">*</span>
+              </label>
               <input
                 type="tel"
+                required
                 value={formData.phone}
                 onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
+                placeholder="+91 1234567890"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Alternate Phone</label>
+              <input
+                type="tel"
+                value={formData.alternate_phone}
+                onChange={(e) => setFormData({ ...formData, alternate_phone: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
+                placeholder="Secondary contact"
               />
             </div>
           </div>
@@ -100,22 +156,109 @@ export default function CreateSupplierPage() {
               type="email"
               value={formData.email}
               onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
+              placeholder="supplier@example.com"
             />
           </div>
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Address</label>
             <textarea
-              rows={3}
+              rows={2}
               value={formData.address}
               onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
+              placeholder="Street address"
             />
           </div>
 
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">City</label>
+              <input
+                type="text"
+                value={formData.city}
+                onChange={(e) => setFormData({ ...formData, city: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
+                placeholder="City"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">State</label>
+              <input
+                type="text"
+                value={formData.state}
+                onChange={(e) => setFormData({ ...formData, state: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
+                placeholder="State"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Pincode</label>
+              <input
+                type="text"
+                value={formData.pincode}
+                onChange={(e) => setFormData({ ...formData, pincode: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
+                placeholder="6-digit pincode"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">GST Number</label>
+              <input
+                type="text"
+                value={formData.gst_number}
+                onChange={(e) => setFormData({ ...formData, gst_number: e.target.value.toUpperCase() })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
+                placeholder="22AAAAA0000A1Z5"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">PAN Number</label>
+              <input
+                type="text"
+                value={formData.pan_number}
+                onChange={(e) => setFormData({ ...formData, pan_number: e.target.value.toUpperCase() })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
+                placeholder="ABCDE1234F"
+                maxLength={10}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Supply Capacity (L/day)</label>
+              <input
+                type="number"
+                value={formData.supply_capacity}
+                onChange={(e) => setFormData({ ...formData, supply_capacity: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                placeholder="Daily supply capacity"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Payment Terms</label>
+              <select
+                value={formData.payment_terms}
+                onChange={(e) => setFormData({ ...formData, payment_terms: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+              >
+                <option value="immediate">Immediate</option>
+                <option value="7_days">7 Days</option>
+                <option value="15_days">15 Days</option>
+                <option value="30_days">30 Days</option>
+              </select>
+            </div>
+          </div>
+
           <div className="border-t pt-4">
-            <h3 className="text-lg font-semibold mb-4">Bank Details</h3>
+            <h3 className="text-lg font-semibold mb-4 text-gray-900">Bank Details</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Account Number</label>
@@ -126,7 +269,7 @@ export default function CreateSupplierPage() {
                     ...formData,
                     bank_account: { ...formData.bank_account, account_number: e.target.value }
                   })}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
                 />
               </div>
 
@@ -139,7 +282,7 @@ export default function CreateSupplierPage() {
                     ...formData,
                     bank_account: { ...formData.bank_account, ifsc: e.target.value }
                   })}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
                 />
               </div>
 
@@ -152,7 +295,7 @@ export default function CreateSupplierPage() {
                     ...formData,
                     bank_account: { ...formData.bank_account, bank_name: e.target.value }
                   })}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
                 />
               </div>
 
@@ -165,7 +308,7 @@ export default function CreateSupplierPage() {
                     ...formData,
                     bank_account: { ...formData.bank_account, account_holder: e.target.value }
                   })}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
                 />
               </div>
             </div>
@@ -177,7 +320,7 @@ export default function CreateSupplierPage() {
               <select
                 value={formData.kyc_status}
                 onChange={(e) => setFormData({ ...formData, kyc_status: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
               >
                 <option value="pending">Pending</option>
                 <option value="approved">Approved</option>

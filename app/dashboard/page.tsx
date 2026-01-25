@@ -184,13 +184,6 @@ export default async function DashboardPage() {
             <span className="text-sm font-medium text-gray-900">New Collection</span>
           </Link>
           <Link
-            href="/dashboard/batches"
-            className="flex flex-col items-center justify-center p-4 bg-green-50 hover:bg-green-100 rounded-lg transition-colors"
-          >
-            <span className="text-3xl mb-2">🏭</span>
-            <span className="text-sm font-medium text-gray-900">Create Batch</span>
-          </Link>
-          <Link
             href="/dashboard/routes"
             className="flex flex-col items-center justify-center p-4 bg-purple-50 hover:bg-purple-100 rounded-lg transition-colors"
           >

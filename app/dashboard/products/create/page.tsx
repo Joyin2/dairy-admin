@@ -17,8 +17,15 @@ export default function CreateProductPage() {
     setError(null)
 
     try {
+      // Auto-generate SKU if empty
+      let skuToUse = formData.sku
+      if (!skuToUse) {
+        skuToUse = `PRD-${Date.now()}-${Math.random().toString(36).substr(2, 5).toUpperCase()}`
+      }
+
       const { error: insertError } = await supabase.from('products').insert({
         ...formData,
+        sku: skuToUse,
         shelf_life_days: formData.shelf_life_days ? parseInt(formData.shelf_life_days) : null
       })
       if (insertError) throw insertError
@@ -29,6 +36,12 @@ export default function CreateProductPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const generateSKU = () => {
+    const timestamp = Date.now()
+    const random = Math.random().toString(36).substr(2, 5).toUpperCase()
+    setFormData({ ...formData, sku: `PRD-${timestamp}-${random}` })
   }
 
   return (
@@ -42,13 +55,23 @@ export default function CreateProductPage() {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Product Name <span className="text-red-500">*</span></label>
               <input type="text" required value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white" />
             </div>
             
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">SKU</label>
-              <input type="text" value={formData.sku} onChange={(e) => setFormData({ ...formData, sku: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+              <div className="flex gap-2">
+                <input type="text" value={formData.sku} onChange={(e) => setFormData({ ...formData, sku: e.target.value })}
+                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                  placeholder="Leave empty to auto-generate" />
+                <button
+                  type="button"
+                  onClick={generateSKU}
+                  className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg font-medium whitespace-nowrap"
+                >
+                  Generate
+                </button>
+              </div>
             </div>
           </div>
           
@@ -56,7 +79,7 @@ export default function CreateProductPage() {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Unit of Measure</label>
               <select value={formData.uom} onChange={(e) => setFormData({ ...formData, uom: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white">
                 <option value="liter">Liter</option>
                 <option value="kg">Kilogram</option>
                 <option value="piece">Piece</option>
@@ -67,7 +90,7 @@ export default function CreateProductPage() {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Shelf Life (days)</label>
               <input type="number" value={formData.shelf_life_days} onChange={(e) => setFormData({ ...formData, shelf_life_days: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white" />
             </div>
           </div>
 
