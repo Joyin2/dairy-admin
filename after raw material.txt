@@ -1,0 +1,364 @@
+# Final merged design — **Single, clean, industry-grade dairy production engine**
+
+Below is a single, consolidated specification that merges both versions you gave into one definitive system. It’s ready to implement with **Next.js + Supabase** and preserves full traceability, QC, packaging and bookkeeping (reset/archive) behavior.
+
+---
+
+## 1 — One-line flow (master)
+
+```
+Milk Pool
+   ↓
+Milk Usage
+   ↓
+Raw Material Consumption
+   ↓
+Processing (Batch, technical details)
+   ↓
+Final Product (QC: approve / reject)
+   ↓
+Packaging (by batch, many types)
+   ↓
+Inventory (packaged items only)
+```
+
+---
+
+## 2 — Why this structure
+
+* Keeps **chemical mass-balance** correct (milk fat units tracked in pool).
+* Ensures **material & cost accounting** (raw materials consumed before creation).
+* Provides **batch-level traceability** for QC, recalls, audits.
+* Packaging is tied to a batch so inventory is fully traceable to origin.
+* Reset/book archiving creates immutable historical “books” per cycle.
+
+---
+
+## 3 — Core tables (concise schema)
+
+### `milk_pool`
+
+```sql
+id (uuid pk)
+total_milk_liters numeric
+total_fat_units numeric
+original_avg_fat numeric
+remaining_milk_liters numeric
+remaining_fat_units numeric
+current_avg_fat numeric
+status text -- 'active' | 'archived'
+created_at timestamptz
+reset_at timestamptz
+created_by uuid
+```
+
+### `milk_usage`
+
+```sql
+id
+milk_pool_id (fk)
+used_liters numeric
+manual_fat_percent numeric
+manual_snf_percent numeric
+used_fat_units numeric
+used_snf_units numeric
+production_id (nullable, fk)
+created_at
+created_by
+```
+
+### `raw_materials`
+
+```sql
+id
+name
+category
+default_unit (nullable)
+created_at
+```
+
+### `raw_material_purchases`
+
+```sql
+id
+material_id
+quantity numeric
+unit text   -- manual text
+rate_per_unit numeric
+total_amount numeric
+supplier text
+invoice_number text
+purchase_date date
+created_by
+created_at
+```
+
+### `raw_material_stock` (derived/materialized)
+
+```sql
+material_id
+current_stock numeric
+unit text
+last_updated
+```
+
+### `production` (parent record)
+
+```sql
+id
+production_code
+milk_usage_id (fk)
+status text -- draft | ready | completed
+notes text
+created_at
+created_by
+```
+
+### `production_raw_materials`
+
+```sql
+id
+production_id (fk)
+material_id
+quantity numeric
+unit text
+```
+
+### `processing_batches`
+
+```sql
+id
+production_id (fk)
+batch_number text UNIQUE
+product_type text
+input_milk_liters numeric
+input_fat_percent numeric
+input_snf_percent numeric
+final_fat_percent numeric
+final_snf_percent numeric
+temperature text
+processing_time text
+culture_details text
+extra_parameters jsonb
+status text -- draft | processing | completed
+created_at
+```
+
+### `final_products`
+
+```sql
+id
+processing_batch_id (fk)
+batch_number text
+product_name text
+bulk_quantity numeric
+unit text
+qc_status text -- pending | approved | rejected
+qc_checked_by uuid
+qc_checked_at timestamptz
+rejection_reason text
+created_at
+```
+
+### `packaging`
+
+```sql
+id
+final_product_id (fk)
+batch_number text
+packaging_type text
+package_size text
+number_of_packages integer
+unit text
+packaged_quantity_total numeric
+created_at
+```
+
+### `inventory` (packaged items only)
+
+```sql
+id
+batch_number text
+product_name text
+packaging_type text
+package_size text
+quantity numeric
+unit text
+expiry_date date
+location text
+created_at
+```
+
+### `milk_pool_books` (archive snapshot)
+
+```sql
+book_id
+pool_id
+book_name
+opening_total_liters
+opening_fat_units
+closing_total_liters
+closing_fat_units
+closing_avg_fat
+total_milk_used
+total_fat_used
+usage_history_json
+production_history_json
+processing_history_json
+final_products_json
+packaging_json
+inventory_json
+created_at
+closed_at
+closed_by
+```
+
+---
+
+## 4 — Status flows (enforced rules)
+
+* **Production**: `draft → ready (raw materials added) → completed`
+* **Processing batch**: `draft → processing → completed`
+* **Final product QC**: `pending → approved | rejected`
+
+  * `rejected` blocks packaging & inventory creation
+* **Packaging**: `not_started → partial → completed`
+* **Milk pool**: `active` or `archived` (archive on reset)
+
+---
+
+## 5 — Exact data flows / transactions (important)
+
+All multi-step changes must be done inside DB transactions (stored procs or Edge Functions):
+
+### A. Create Production (wizard)
+
+1. Insert `production` (status=draft).
+2. Create `milk_usage` (deducts milk units from `milk_pool` — update `remaining_*` fields).
+3. Add `production_raw_materials` rows — validate and deduct `raw_material_stock`.
+4. Set `production.status = ready`.
+
+### B. Start Processing Batch
+
+1. Insert `processing_batches` linked to `production`. Status `processing`. Store technical parameters (`extra_parameters` JSONB).
+
+### C. Complete Processing → create `final_products`
+
+1. Validate production & materials consumed.
+2. Set `processing_batches.status = completed`.
+3. Insert `final_products` with `qc_status = pending`.
+
+### D. QC Approval
+
+1. If `approved` → allow packaging.
+2. If `rejected` → mark batch failed; do not permit packaging.
+
+### E. Packaging
+
+1. Admin creates one or many `packaging` rows for that `final_product`. Validate total packaged equals bulk (or record partial with warning).
+2. On packaging completion, insert `inventory` entries per packaging row.
+
+### F. Inventory & Sales
+
+* Inventory entries reference `batch_number` so stock reports trace to batch.
+
+---
+
+## 6 — Reset / Book maintenance (archive)
+
+When Admin clicks **Reset Pool**:
+
+1. Collect all related data for active pool: `milk_usage`, `production`, `processing_batches`, `final_products`, `packaging`, `inventory`.
+2. Insert snapshot into `milk_pool_books` (store JSON arrays for history).
+3. Mark active pool row `status='archived'`, set `reset_at`.
+4. Create new `milk_pool` row with zeros and `status='active'`.
+5. UI: archived books list with filters (date range, book id, closed_by, product types, avg fat ranges).
+
+> Book naming: auto `"POOL-BOOK-#<seq> (YYYYMMDD → YYYYMMDD)"` — filterable and exportable.
+
+---
+
+## 7 — Validations & business rules (must enforce)
+
+* Cannot use more milk than `remaining_milk_liters`.
+* Cannot use more fat units than available.
+* Raw material consumption must not reduce stock below zero (unless admin override).
+* Cannot complete processing until production is `ready`.
+* Cannot package until `final_products.qc_status = approved`.
+* Packaging totals should match bulk quantity (warn if mismatch).
+* Audit logs for all create/update/delete operations (who, when, old/new values).
+* RLS policies: restrict reads/writes by role (admin vs manufacturer vs delivery agent).
+
+---
+
+## 8 — Indexes & performance suggestions
+
+* `milk_usage (milk_pool_id, created_at DESC)`
+* `processing_batches (batch_number)` unique index
+* `final_products (processing_batch_id)`
+* `inventory (batch_number, product_name)`
+* Full-text/pg_trgm on `raw_materials.name` and `production_code`
+* Materialized views for heavy reports (daily used milk, top raw materials) refreshed async
+
+---
+
+## 9 — API / Edge function contract (examples)
+
+* `POST /api/production/create` — start production (creates production + milk_usage)
+* `POST /api/production/:id/add-materials` — add raw materials (deduct stock)
+* `POST /api/processing/:id/start` — create processing batch
+* `POST /api/processing/:id/complete` — complete processing (creates final_product)
+* `POST /api/final-product/:id/qc` — approve/reject final product
+* `POST /api/packaging/:final_product_id/add` — add packaging rows
+* `POST /api/inventory/from-packaging/:packaging_id` — create inventory entries
+* `POST /api/pool/reset` — reset and archive current pool (protected to admin)
+
+All must be transactional and return descriptive error codes when validations fail.
+
+---
+
+## 10 — Admin UI (pages / components)
+
+* **Milk Pool Dashboard** (active pool card; fat units; Use milk modal)
+* **Create Production Wizard**: Step 1 milk usage → Step 2 add raw materials → Step 3 processing params → Step 4 complete (creates final_product)
+* **Processing Batches**: list, filters, batch detail (extra_params), start/complete buttons
+* **Final Products / QC**: lab inputs, approve/reject UI, reject reason modal
+* **Packaging**: packaging builder (add multiple pack options, validate totals), packaging status
+* **Inventory**: packaged stock list, expiry, location, search by batch
+* **Raw Materials**: master, purchases, stock ledger (manual unit input allowed)
+* **Pool Books (History)**: searchable/filtered list of archived pool-books, view JSON snapshots, export CSV/PDF
+* **Audit Logs** and **Impersonation** (admin tools)
+
+UX notes:
+
+* Use optimistic UI for small updates (use SWR / React Query).
+* Use server-side rendering for dashboard counts; use realtime (Supabase Realtime) for live milk usage & deliveries.
+* Use skeletons for heavy tables.
+
+---
+
+## 11 — Example (Curd) — end-to-end
+
+1. **Milk Pool**: 300 L, total fat units = 1250 (original avg 4.1667%)
+2. Create **Production P-100** → `milk_usage` uses 100 L @ 4% → pool updates.
+3. Add **Raw Materials**: culture 200 g, cups 100 units (stock deducted). Production ready.
+4. Create **Processing Batch CURD-2026-001** with temp 42°C, time 8h, input milk 100 L. Status processing.
+5. Complete processing → `final_products` created (bulk 100 L, qc pending).
+6. Lab approves QC → `qc_status = approved`.
+7. Packaging: add 100ml cups × 100 (100 L total). Create `packaging` rows → on completion create `inventory` entries (Curd 100ml × 100).
+8. Inventory items reference `batch_number = CURD-2026-001` for traceability.
+9. On pool reset, snapshot P-100 and batch CURD-2026-001 into `milk_pool_books`.
+
+---
+
+## 12 — Acceptance criteria (what “done” looks like)
+
+* Milk pool math preserved across many uses (no drift).
+* All productions are traceable to milk usage and raw material consumption.
+* Processing batches have unique batch numbers and technical parameters.
+* QC can approve/reject and blocked batches cannot be packaged.
+* Packaging maps bulk → packaged inventory and inventory entries reference batch.
+* Reset archives complete cycle into a searchable “book” with JSON snapshots.
+* RLS + audit logs protect data integrity.
+
+---

@@ -14,6 +14,7 @@ export default function CreateCollectionPage() {
     qty_liters: '',
     fat: '',
     snf: '',
+    price_per_liter: '',
     photo_url: '',
     qc_status: 'pending' as 'pending' | 'approved' | 'rejected',
   })
@@ -51,6 +52,7 @@ export default function CreateCollectionPage() {
           qty_liters: parseFloat(formData.qty_liters),
           fat: formData.fat ? parseFloat(formData.fat) : null,
           snf: formData.snf ? parseFloat(formData.snf) : null,
+          price_per_liter: formData.price_per_liter ? parseFloat(formData.price_per_liter) : null,
           photo_url: formData.photo_url || null,
           qc_status: formData.qc_status,
           status: 'new',
@@ -134,6 +136,20 @@ export default function CreateCollectionPage() {
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Price per Liter (₹)
+            </label>
+            <input
+              type="number"
+              step="0.01"
+              value={formData.price_per_liter}
+              onChange={(e) => setFormData({ ...formData, price_per_liter: e.target.value })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+              placeholder="Enter price per liter"
+            />
           </div>
 
           <div>

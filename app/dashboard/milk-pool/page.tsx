@@ -9,10 +9,14 @@ interface MilkPool {
   name: string
   total_milk_liters: number
   total_fat_units: number
+  total_snf_units: number
   original_avg_fat: number
+  original_avg_snf: number
   remaining_milk_liters: number
   remaining_fat_units: number
+  remaining_snf_units: number
   current_avg_fat: number
+  current_avg_snf: number
   status: string
   created_at: string
   reset_at?: string
@@ -31,8 +35,11 @@ interface UsageLog {
   id: string
   used_liters: number
   manual_fat_percent: number
+  manual_snf_percent: number
   used_fat_units: number
+  used_snf_units: number
   remaining_avg_fat_after: number
+  remaining_avg_snf_after: number
   purpose: string
   product_id?: string
   products?: { name: string }
@@ -86,6 +93,7 @@ export default function MilkPoolPage() {
   const [useForm, setUseForm] = useState({
     liters: '',
     fat_percent: '',
+    snf_percent: '',
     purpose: ''
   })
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([])
@@ -205,6 +213,7 @@ export default function MilkPoolPage() {
 
       const useLiters = parseFloat(useForm.liters)
       const manualFatPercent = parseFloat(useForm.fat_percent)
+      const manualSnfPercent = parseFloat(useForm.snf_percent)
       
       // Validate inputs
       if (useLiters <= 0 || useLiters > pool.remaining_milk_liters) {
@@ -216,11 +225,21 @@ export default function MilkPoolPage() {
         throw new Error(`Fat % cannot exceed ${maxFat.toFixed(2)}%`)
       }
 
-      // Calculate usage
+      const maxSnf = pool.remaining_snf_units / useLiters
+      if (manualSnfPercent > maxSnf) {
+        throw new Error(`SNF % cannot exceed ${maxSnf.toFixed(2)}%`)
+      }
+
+      // Calculate fat usage
       const usedFatUnits = useLiters * manualFatPercent
       const newRemainingLiters = pool.remaining_milk_liters - useLiters
       const newRemainingFatUnits = pool.remaining_fat_units - usedFatUnits
       const newAvgFat = newRemainingLiters > 0 ? (newRemainingFatUnits / newRemainingLiters) : 0
+
+      // Calculate SNF usage
+      const usedSnfUnits = useLiters * manualSnfPercent
+      const newRemainingSnfUnits = pool.remaining_snf_units - usedSnfUnits
+      const newAvgSnf = newRemainingLiters > 0 ? (newRemainingSnfUnits / newRemainingLiters) : 0
 
       // Insert usage log
       const { data: usageData, error: usageError } = await supabase
@@ -229,10 +248,13 @@ export default function MilkPoolPage() {
           milk_pool_id: pool.id,
           used_liters: useLiters,
           manual_fat_percent: manualFatPercent,
+          manual_snf_percent: manualSnfPercent,
           used_fat_units: usedFatUnits,
+          used_snf_units: usedSnfUnits,
           remaining_liters_after: newRemainingLiters,
           remaining_fat_units_after: newRemainingFatUnits,
           remaining_avg_fat_after: newAvgFat,
+          remaining_avg_snf_after: newAvgSnf,
           purpose: useForm.purpose || null
         })
         .select()
@@ -246,7 +268,9 @@ export default function MilkPoolPage() {
         .update({
           remaining_milk_liters: newRemainingLiters,
           remaining_fat_units: newRemainingFatUnits,
-          current_avg_fat: newAvgFat
+          remaining_snf_units: newRemainingSnfUnits,
+          current_avg_fat: newAvgFat,
+          current_avg_snf: newAvgSnf
         })
         .eq('id', pool.id)
 
@@ -269,9 +293,9 @@ export default function MilkPoolPage() {
         if (invError) throw invError
       }
 
-      alert(`Used ${useLiters}L @ ${manualFatPercent}% fat. ${validItems.length} inventory items created.`)
+      alert(`Used ${useLiters}L @ ${manualFatPercent}% fat, ${manualSnfPercent}% SNF. ${validItems.length} inventory items created.`)
       setShowUseModal(false)
-      setUseForm({ liters: '', fat_percent: '', purpose: '' })
+      setUseForm({ liters: '', fat_percent: '', snf_percent: '', purpose: '' })
       setInventoryItems([])
       loadData()
     } catch (err: any) {
@@ -345,6 +369,11 @@ export default function MilkPoolPage() {
     return (pool.remaining_fat_units / parseFloat(useForm.liters)).toFixed(2)
   }
 
+  const getMaxSnfPercent = () => {
+    if (!pool || !useForm.liters || parseFloat(useForm.liters) <= 0) return 0
+    return (pool.remaining_snf_units / parseFloat(useForm.liters)).toFixed(2)
+  }
+
   if (loading) return <div className="text-center py-12">Loading...</div>
 
   return (
@@ -381,7 +410,7 @@ export default function MilkPoolPage() {
 
       {/* Pool Stats */}
       {pool && (
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
           <div className="bg-white rounded-lg shadow p-4">
             <div className="text-sm text-gray-600">Total Milk</div>
             <div className="text-2xl font-bold text-blue-600">{pool.total_milk_liters?.toFixed(2) || 0}L</div>
@@ -389,6 +418,11 @@ export default function MilkPoolPage() {
           <div className="bg-white rounded-lg shadow p-4">
             <div className="text-sm text-gray-600">Original Avg Fat</div>
             <div className="text-2xl font-bold text-purple-600">{pool.original_avg_fat?.toFixed(2) || 0}%</div>
+            <div className="text-xs text-gray-400">🔒 Locked</div>
+          </div>
+          <div className="bg-white rounded-lg shadow p-4">
+            <div className="text-sm text-gray-600">Original Avg SNF</div>
+            <div className="text-2xl font-bold text-purple-600">{pool.original_avg_snf?.toFixed(2) || 0}%</div>
             <div className="text-xs text-gray-400">🔒 Locked</div>
           </div>
           <div className="bg-white rounded-lg shadow p-4 border-2 border-green-500">
@@ -400,9 +434,18 @@ export default function MilkPoolPage() {
             <div className="text-2xl font-bold text-orange-600">{pool.current_avg_fat?.toFixed(2) || 0}%</div>
             <div className="text-xs text-gray-400">Auto-adjusted</div>
           </div>
+          <div className="bg-white rounded-lg shadow p-4 border-2 border-orange-500">
+            <div className="text-sm text-gray-600">Current Avg SNF</div>
+            <div className="text-2xl font-bold text-orange-600">{pool.current_avg_snf?.toFixed(2) || 0}%</div>
+            <div className="text-xs text-gray-400">Auto-adjusted</div>
+          </div>
           <div className="bg-white rounded-lg shadow p-4">
             <div className="text-sm text-gray-600">Fat Units Left</div>
             <div className="text-2xl font-bold text-gray-600">{pool.remaining_fat_units?.toFixed(2) || 0}</div>
+          </div>
+          <div className="bg-white rounded-lg shadow p-4">
+            <div className="text-sm text-gray-600">SNF Units Left</div>
+            <div className="text-2xl font-bold text-gray-600">{pool.remaining_snf_units?.toFixed(2) || 0}</div>
           </div>
         </div>
       )}
@@ -491,10 +534,13 @@ export default function MilkPoolPage() {
                   <div className="flex justify-between items-start">
                     <div>
                       <div className="font-medium text-gray-900">
-                        {log.used_liters}L @ {log.manual_fat_percent}% fat
+                        {log.used_liters}L @ {log.manual_fat_percent}% fat, {log.manual_snf_percent || 0}% SNF
                       </div>
                       <div className="text-sm text-gray-700">
-                        Fat units: {log.used_fat_units?.toFixed(2)} • After: {log.remaining_avg_fat_after?.toFixed(2)}%
+                        Fat units: {log.used_fat_units?.toFixed(2)} • SNF units: {log.used_snf_units?.toFixed(2) || '0.00'}
+                      </div>
+                      <div className="text-sm text-gray-500">
+                        After: Fat {log.remaining_avg_fat_after?.toFixed(2)}% • SNF {log.remaining_avg_snf_after?.toFixed(2) || '0.00'}%
                       </div>
                       {log.purpose && (
                         <div className="text-xs text-gray-600 mt-1">{log.purpose}</div>
@@ -538,7 +584,8 @@ export default function MilkPoolPage() {
                     <div className="text-sm text-gray-600">
                       Total: {archive.total_milk_liters?.toFixed(2)}L • 
                       Remaining at reset: {archive.remaining_milk_liters?.toFixed(2)}L • 
-                      Original Fat: {archive.original_avg_fat?.toFixed(2)}%
+                      Original Fat: {archive.original_avg_fat?.toFixed(2)}% • 
+                      Original SNF: {(archive as any).original_avg_snf?.toFixed(2) || '0.00'}%
                     </div>
                     <div className="text-xs text-gray-500 mt-1">
                       {archive.usage_count} usages • {archive.collections_count} collections • 
@@ -565,6 +612,8 @@ export default function MilkPoolPage() {
                                 <th className="px-2 py-1 text-left">Liters</th>
                                 <th className="px-2 py-1 text-left">Fat %</th>
                                 <th className="px-2 py-1 text-left">Fat Units</th>
+                                <th className="px-2 py-1 text-left">SNF %</th>
+                                <th className="px-2 py-1 text-left">SNF Units</th>
                                 <th className="px-2 py-1 text-left">Purpose</th>
                               </tr>
                             </thead>
@@ -575,6 +624,8 @@ export default function MilkPoolPage() {
                                   <td className="px-2 py-1">{usage.used_liters}L</td>
                                   <td className="px-2 py-1">{usage.manual_fat_percent}%</td>
                                   <td className="px-2 py-1">{usage.used_fat_units?.toFixed(2)}</td>
+                                  <td className="px-2 py-1">{usage.manual_snf_percent || 0}%</td>
+                                  <td className="px-2 py-1">{usage.used_snf_units?.toFixed(2) || '0.00'}</td>
                                   <td className="px-2 py-1">{usage.purpose || '-'}</td>
                                 </tr>
                               ))}
@@ -621,8 +672,8 @@ export default function MilkPoolPage() {
             <div className="bg-blue-50 p-3 rounded-lg mb-4 border border-blue-200">
               <div className="text-sm text-blue-900">
                 <div>Available: <strong className="text-blue-800">{pool.remaining_milk_liters?.toFixed(2)}L</strong></div>
-                <div>Current Avg Fat: <strong className="text-blue-800">{pool.current_avg_fat?.toFixed(2)}%</strong></div>
-                <div>Fat Units Left: <strong className="text-blue-800">{pool.remaining_fat_units?.toFixed(2)}</strong></div>
+                <div>Current Avg Fat: <strong className="text-blue-800">{pool.current_avg_fat?.toFixed(2)}%</strong> | Current Avg SNF: <strong className="text-blue-800">{pool.current_avg_snf?.toFixed(2)}%</strong></div>
+                <div>Fat Units Left: <strong className="text-blue-800">{pool.remaining_fat_units?.toFixed(2)}</strong> | SNF Units Left: <strong className="text-blue-800">{pool.remaining_snf_units?.toFixed(2)}</strong></div>
               </div>
             </div>
 
@@ -659,6 +710,26 @@ export default function MilkPoolPage() {
                 {useForm.liters && (
                   <p className="text-xs text-gray-500 mt-1">
                     Max possible: {getMaxFatPercent()}%
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Manual SNF % <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  required
+                  value={useForm.snf_percent}
+                  onChange={(e) => setUseForm({ ...useForm, snf_percent: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-gray-900 bg-white"
+                  placeholder="Enter desired SNF %"
+                />
+                {useForm.liters && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Max possible: {getMaxSnfPercent()}%
                   </p>
                 )}
               </div>
@@ -732,16 +803,23 @@ export default function MilkPoolPage() {
               </div>
 
               {/* Preview calculation */}
-              {useForm.liters && useForm.fat_percent && (
+              {useForm.liters && useForm.fat_percent && useForm.snf_percent && (
                 <div className="bg-yellow-50 p-3 rounded-lg text-sm border border-yellow-200">
                   <div className="font-medium mb-1 text-yellow-900">Preview:</div>
                   <div className="text-yellow-800">Fat units to use: {(parseFloat(useForm.liters) * parseFloat(useForm.fat_percent)).toFixed(2)}</div>
+                  <div className="text-yellow-800">SNF units to use: {(parseFloat(useForm.liters) * parseFloat(useForm.snf_percent)).toFixed(2)}</div>
                   <div className="text-yellow-800">
                     Remaining after: {(pool.remaining_milk_liters - parseFloat(useForm.liters)).toFixed(2)}L
                   </div>
                   <div className="text-yellow-800">
                     New avg fat: {
                       ((pool.remaining_fat_units - parseFloat(useForm.liters) * parseFloat(useForm.fat_percent)) / 
+                      (pool.remaining_milk_liters - parseFloat(useForm.liters))).toFixed(2)
+                    }%
+                  </div>
+                  <div className="text-yellow-800">
+                    New avg SNF: {
+                      ((pool.remaining_snf_units - parseFloat(useForm.liters) * parseFloat(useForm.snf_percent)) / 
                       (pool.remaining_milk_liters - parseFloat(useForm.liters))).toFixed(2)
                     }%
                   </div>
@@ -760,7 +838,7 @@ export default function MilkPoolPage() {
                   type="button"
                   onClick={() => {
                     setShowUseModal(false)
-                    setUseForm({ liters: '', fat_percent: '', purpose: '' })
+                    setUseForm({ liters: '', fat_percent: '', snf_percent: '', purpose: '' })
                     setInventoryItems([])
                   }}
                   className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 py-2 rounded-lg font-medium"

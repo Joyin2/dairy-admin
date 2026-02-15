@@ -1,0 +1,290 @@
+> Raw Material Consumption must happen BEFORE Inventory creation.
+
+That is 100% correct from a production accounting perspective.
+
+Let’s redesign the entire production flow cleanly and logically.
+
+---
+
+# ✅ NEW CORRECT FLOW
+
+```
+Milk Pool
+   ↓
+Milk Usage
+   ↓
+Production Process
+   ↓
+Raw Material Consumption
+   ↓
+Inventory Creation
+```
+
+So inventory is created **only after**:
+
+* Milk is consumed
+* Raw materials are consumed
+
+Inventory becomes the **final output of a completed production process**.
+
+---
+
+# 1️⃣ FULL PRODUCTION STRUCTURE (FINAL VERSION)
+
+## 🥛 Step 1 — Milk Usage
+
+Admin selects:
+
+* Liters used
+* Manual fat %
+
+System:
+
+* Deducts milk
+* Adjusts fat balance
+
+---
+
+## 🏭 Step 2 — Production Process Record (Parent Entry)
+
+Create a production entry first.
+
+### production table
+
+```
+id
+production_code
+milk_used_liters
+milk_used_fat_percent
+milk_used_fat_units
+notes
+created_by
+created_at
+status (draft / completed)
+```
+
+⚠️ No inventory yet.
+⚠️ No stock created yet.
+
+This is just a production record.
+
+---
+
+## 📦 Step 3 — Raw Material Consumption
+
+Now you attach raw materials to the production.
+
+### production_raw_materials table
+
+```
+id
+production_id
+material_id
+quantity_used
+unit (manual text)
+```
+
+System:
+
+* Check stock
+* Deduct stock
+* Record material usage
+
+Now production is fully defined.
+
+---
+
+## 📊 Step 4 — Inventory Creation (FINAL STEP)
+
+Now admin clicks:
+
+### “Complete Production”
+
+Only at this moment:
+
+* Inventory items are created
+* Production status = completed
+
+---
+
+### production_inventory table
+
+```
+id
+production_id
+product_name
+quantity
+unit
+created_at
+```
+
+This table becomes your stock source.
+
+---
+
+# 2️⃣ WHY THIS ORDER IS CORRECT
+
+### Before (incorrect flow)
+
+Milk → Inventory → Raw Material
+
+This is wrong because:
+
+* You create stock before knowing total production inputs
+* Hard to track costing
+* No material validation
+
+---
+
+### Now (correct flow)
+
+Milk + Raw Materials → Production → Inventory
+
+✔️ Complete traceability
+✔️ Cost calculation possible
+✔️ Accurate stock movement
+✔️ Industrial-grade logic
+
+---
+
+# 3️⃣ REAL-WORLD EXAMPLE
+
+### Production #P-102
+
+### Milk Used:
+
+```
+100 L
+Fat: 4%
+```
+
+### Raw Materials Used:
+
+```
+Sugar – 10 kg
+Label – 200 pieces
+Packaging – 100 bottles
+```
+
+Stock deducts immediately.
+
+Production is still "Draft".
+
+---
+
+### Admin clicks "Complete Production"
+
+Now system creates:
+
+```
+Inventory:
+Flavoured Milk – 100 bottles
+```
+
+Production status becomes:
+
+```
+completed
+```
+
+---
+
+# 4️⃣ SYSTEM FLOW VISUAL (FINAL)
+
+```
+🥛 Milk Pool
+      ↓
+🧾 Milk Usage
+      ↓
+🏭 Production Record (Draft)
+      ↓
+📦 Raw Material Consumption
+      ↓
+📊 Inventory Creation (Complete)
+```
+
+---
+
+# 5️⃣ RESET BOOK SYSTEM IMPACT
+
+When you Reset Pool:
+
+You archive:
+
+* Milk Pool
+* Milk Usage
+* Production Records
+* Raw Material Usage
+* Inventory Created in that pool
+
+But raw material stock remains separate.
+
+---
+
+# 6️⃣ IMPORTANT VALIDATIONS
+
+### Before Completing Production:
+
+✔️ Milk must be deducted
+✔️ Raw materials must be deducted
+✔️ Inventory outputs must be defined
+✔️ Stock must not go negative
+
+If something missing:
+→ Cannot complete production
+
+---
+
+# 7️⃣ UI FLOW (ADMIN PANEL)
+
+### Production Page Layout
+
+### Step 1: Create Production
+
+Enter milk usage
+
+### Step 2: Add Raw Materials
+
+Dynamic row input
+
+### Step 3: Define Output Inventory
+
+### Step 4: Complete Production Button
+
+---
+
+# 8️⃣ STATUS LOGIC
+
+```
+Draft → Raw Materials Added → Ready → Completed
+```
+
+Only "Completed" creates inventory.
+
+---
+
+# 9️⃣ DATABASE RELATIONSHIP (FINAL)
+
+```
+Milk Pool
+   ↓
+Milk Usage
+   ↓
+Production (Parent)
+   ↙          ↘
+Raw Materials   Inventory
+```
+
+---
+
+# 🔟 WHY THIS IS BEST FOR YOU
+
+✔️ Simple
+✔️ Clean
+✔️ Flexible
+✔️ Correct accounting
+✔️ Works with reset book system
+✔️ Easy reporting
+✔️ Scalable
+
+---

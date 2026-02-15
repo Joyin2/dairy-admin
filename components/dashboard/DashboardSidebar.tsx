@@ -32,10 +32,12 @@ export default function DashboardSidebar({ user }: DashboardSidebarProps) {
     { name: 'Suppliers', href: '/dashboard/suppliers', icon: '🚜', section: 'master' },
     { name: 'Shops', href: '/dashboard/shops', icon: '🏪', section: 'master' },
     { name: 'Products', href: '/dashboard/products', icon: '📦', section: 'master' },
+    { name: 'Raw Materials', href: '/dashboard/raw-materials', icon: '🧪', section: 'master' },
     
     { name: 'Operations', section: 'header' },
     { name: 'Collections', href: '/dashboard/collections', icon: '🥛', section: 'operations' },
     { name: 'Milk Pool', href: '/dashboard/milk-pool', icon: '🧪', section: 'operations' },
+    { name: 'Production', href: '/dashboard/production', icon: '🏭', section: 'operations' },
     { name: 'Inventory', href: '/dashboard/inventory', icon: '📊', section: 'operations' },
     
     { name: 'Delivery', section: 'header' },
