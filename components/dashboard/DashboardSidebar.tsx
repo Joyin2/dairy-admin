@@ -31,7 +31,6 @@ export default function DashboardSidebar({ user }: DashboardSidebarProps) {
     { name: 'Master Data', section: 'header' },
     { name: 'Suppliers', href: '/dashboard/suppliers', icon: '🚜', section: 'master' },
     { name: 'Shops', href: '/dashboard/shops', icon: '🏪', section: 'master' },
-    { name: 'Products', href: '/dashboard/products', icon: '📦', section: 'master' },
     { name: 'Raw Materials', href: '/dashboard/raw-materials', icon: '🧪', section: 'master' },
     
     { name: 'Operations', section: 'header' },
@@ -41,13 +40,20 @@ export default function DashboardSidebar({ user }: DashboardSidebarProps) {
     { name: 'Inventory', href: '/dashboard/inventory', icon: '📊', section: 'operations' },
     
     { name: 'Delivery', section: 'header' },
+    { name: 'Dispatch', href: '/dashboard/dispatch', icon: '📤', section: 'delivery' },
     { name: 'Routes', href: '/dashboard/routes', icon: '🗺️', section: 'delivery' },
-    { name: 'Deliveries', href: '/dashboard/deliveries', icon: '🚚', section: 'delivery' },
+    { name: 'Stock Returns', href: '/dashboard/stock-returns', icon: '🔄', section: 'delivery' },
+    { name: 'Product Returns', href: '/dashboard/product-returns', icon: '↩️', section: 'delivery' },
+    { name: 'Sales History', href: '/dashboard/sales-history', icon: '📋', section: 'delivery' },
+    { name: 'Direct Sales', href: '/dashboard/direct-sales', icon: '🏘️', section: 'delivery' },
     
     { name: 'Finance', section: 'header' },
     { name: 'Outstanding', href: '/dashboard/outstanding', icon: '⚠️', section: 'finance' },
     { name: 'Payments', href: '/dashboard/payments', icon: '💰', section: 'finance' },
     { name: 'Reports', href: '/dashboard/reports', icon: '📈', section: 'finance' },
+    
+    { name: 'HR & Expenses', section: 'header' },
+    { name: 'Employees', href: '/dashboard/employees', icon: '🏢', section: 'hr' },
   ]
 
   return (

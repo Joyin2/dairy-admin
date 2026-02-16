@@ -4,6 +4,7 @@ import { useState, useEffect, use } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { isProductionEnvironment, logProductionOnlySkip, getAppEnvironment } from '@/lib/environment'
 
 export default function ProductionDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const router = useRouter()
@@ -158,6 +159,14 @@ export default function ProductionDetailPage({ params }: { params: Promise<{ id:
       
       if (fpError) throw fpError
       
+      // Log production event - push notification is triggered via Supabase realtime
+      // listeners in the delivery/factory app (production environment only)
+      if (isProductionEnvironment()) {
+        console.log(`[Production Event] Batch ${batch.batch_number} completed with ${productEntries.length} product(s). Push notification will be sent.`)
+      } else {
+        logProductionOnlySkip(`Batch completion notification for ${batch.batch_number}`)
+      }
+      
       setFinalProducts(prev => [...prev, ...(fps || [])])
       setShowFinalProductForm(false)
       setProductEntries([{ product_name: '', bulk_quantity: '', unit: 'L' }])
@@ -203,6 +212,14 @@ export default function ProductionDetailPage({ params }: { params: Promise<{ id:
       if (qcError) {
         console.error('QC update error:', JSON.stringify(qcError))
         throw qcError
+      }
+      
+      // Log QC event - push notification is triggered via Supabase realtime
+      // listeners in the delivery/factory app (production environment only)
+      if (isProductionEnvironment()) {
+        console.log(`[QC Event] Product "${selectedProductForQC.product_name}" ${qcDecision}. Push notification will be sent.`)
+      } else {
+        logProductionOnlySkip(`QC ${qcDecision} notification for ${selectedProductForQC.product_name}`)
       }
       
       setShowQCModal(false)
@@ -299,6 +316,14 @@ export default function ProductionDetailPage({ params }: { params: Promise<{ id:
         setError(`Packaging saved but inventory creation failed: ${invError.message}`)
       } else {
         console.log('Successfully created inventory entries:', invData)
+        
+        // Log packaging event - push notification is triggered via Supabase realtime
+        // listeners in the delivery/factory app (production environment only)
+        if (isProductionEnvironment()) {
+          console.log(`[Packaging Event] ${packagingEntries.length} package type(s) created for ${selectedProductForPackaging.product_name}. Push notification will be sent.`)
+        } else {
+          logProductionOnlySkip(`Packaging completion notification for ${selectedProductForPackaging.product_name}`)
+        }
       }
       
       setShowPackagingForm(false)
@@ -346,7 +371,14 @@ export default function ProductionDetailPage({ params }: { params: Promise<{ id:
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">{production.production_code}</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl font-bold text-gray-900">{production.production_code}</h1>
+            {!isProductionEnvironment() && (
+              <span className="px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800 border border-yellow-300">
+                {getAppEnvironment().toUpperCase()} - Notifications Off
+              </span>
+            )}
+          </div>
           <p className="text-sm text-gray-600 mt-1">Created by {production.app_users?.name}</p>
         </div>
         <Link

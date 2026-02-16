@@ -9,6 +9,7 @@ export default function RawMaterialsPage() {
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState(false)
   const [showAddModal, setShowAddModal] = useState(false)
+  const [showEditModal, setShowEditModal] = useState(false)
   const [showPurchaseModal, setShowPurchaseModal] = useState(false)
   const [selectedMaterial, setSelectedMaterial] = useState<any>(null)
   const [error, setError] = useState<string | null>(null)
@@ -141,6 +142,58 @@ export default function RawMaterialsPage() {
     setShowPurchaseModal(true)
   }
 
+  const openEditModal = (material: any) => {
+    setSelectedMaterial(material)
+    setMaterialForm({
+      name: material.name || '',
+      sku: material.sku || '',
+      category: material.category || '',
+      unit: material.unit || '',
+      cost_per_unit: material.cost_per_unit ? String(material.cost_per_unit) : ''
+    })
+    setError(null)
+    setShowEditModal(true)
+  }
+
+  const handleEditMaterial = async () => {
+    if (!materialForm.name.trim() || !materialForm.unit.trim()) {
+      setError('Name and unit are required')
+      return
+    }
+
+    setActionLoading(true)
+    setError(null)
+
+    try {
+      const { error: updateError } = await supabase
+        .from('raw_materials')
+        .update({
+          name: materialForm.name.trim(),
+          sku: materialForm.sku?.trim() || null,
+          category: materialForm.category?.trim() || null,
+          unit: materialForm.unit.trim(),
+          cost_per_unit: materialForm.cost_per_unit ? parseFloat(materialForm.cost_per_unit) : null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', selectedMaterial.id)
+
+      if (updateError) {
+        console.error('Update error:', JSON.stringify(updateError))
+        throw new Error(updateError.message || JSON.stringify(updateError))
+      }
+
+      setShowEditModal(false)
+      setSelectedMaterial(null)
+      setMaterialForm({ name: '', sku: '', category: '', unit: '', cost_per_unit: '' })
+      await loadMaterials()
+    } catch (err: any) {
+      console.error('Error:', String(err))
+      setError(err?.message || String(err))
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
@@ -214,7 +267,13 @@ export default function RawMaterialsPage() {
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                     {material.unit}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
+                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm space-x-3">
+                    <button
+                      onClick={() => openEditModal(material)}
+                      className="text-gray-600 hover:text-gray-800 font-medium"
+                    >
+                      Edit
+                    </button>
                     <button
                       onClick={() => openPurchaseModal(material)}
                       className="text-blue-600 hover:text-blue-800 font-medium"
@@ -428,6 +487,105 @@ export default function RawMaterialsPage() {
                 onClick={() => {
                   setShowPurchaseModal(false)
                   setSelectedMaterial(null)
+                  setError(null)
+                }}
+                disabled={actionLoading}
+                className="flex-1 px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Material Modal */}
+      {showEditModal && selectedMaterial && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full">
+            <h3 className="text-xl font-bold text-gray-900 mb-4">Edit Material</h3>
+            
+            {error && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
+                {error}
+              </div>
+            )}
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={materialForm.name}
+                  onChange={(e) => setMaterialForm({ ...materialForm, name: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">SKU</label>
+                <input
+                  type="text"
+                  value={materialForm.sku}
+                  onChange={(e) => setMaterialForm({ ...materialForm, sku: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Category</label>
+                <input
+                  type="text"
+                  value={materialForm.category}
+                  onChange={(e) => setMaterialForm({ ...materialForm, category: e.target.value })}
+                  placeholder="e.g., Culture, Packaging, Additives"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Unit <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={materialForm.unit}
+                  onChange={(e) => setMaterialForm({ ...materialForm, unit: e.target.value })}
+                  placeholder="e.g., kg, g, pieces, L"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Cost per Unit (optional)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={materialForm.cost_per_unit}
+                  onChange={(e) => setMaterialForm({ ...materialForm, cost_per_unit: e.target.value })}
+                  placeholder="e.g., 50.00"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+            
+            <div className="flex gap-2 mt-6">
+              <button
+                onClick={handleEditMaterial}
+                disabled={actionLoading}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {actionLoading ? 'Saving...' : 'Save Changes'}
+              </button>
+              <button
+                onClick={() => {
+                  setShowEditModal(false)
+                  setSelectedMaterial(null)
+                  setMaterialForm({ name: '', sku: '', category: '', unit: '', cost_per_unit: '' })
                   setError(null)
                 }}
                 disabled={actionLoading}

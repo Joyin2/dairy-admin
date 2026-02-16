@@ -22,7 +22,7 @@ export default async function DashboardPage() {
     supabase
       .from('routes')
       .select('*', { count: 'exact', head: true })
-      .eq('date', new Date().toISOString().split('T')[0]),
+      .eq('is_active', true),
     supabase.from('suppliers').select('*', { count: 'exact', head: true }),
     supabase.from('shops').select('*', { count: 'exact', head: true }),
   ])
