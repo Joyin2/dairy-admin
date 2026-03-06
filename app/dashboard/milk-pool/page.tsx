@@ -1,6 +1,20 @@
 'use client'
 
-import { createClient } from '@/lib/supabase/client'
+import { db, auth } from '@/lib/firebase/client'
+import {
+  collection,
+  query,
+  where,
+  getDocs,
+  orderBy,
+  limit,
+  doc,
+  deleteDoc,
+  updateDoc,
+  addDoc,
+  getDoc,
+  writeBatch,
+} from 'firebase/firestore'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
@@ -74,7 +88,6 @@ interface ArchivedPool {
 
 export default function MilkPoolPage() {
   const router = useRouter()
-  const supabase = createClient()
   const [pool, setPool] = useState<MilkPool | null>(null)
   const [collections, setCollections] = useState<Collection[]>([])
   const [selectedCollections, setSelectedCollections] = useState<string[]>([])
@@ -86,7 +99,7 @@ export default function MilkPoolPage() {
   const [loading, setLoading] = useState(true)
   const [processing, setProcessing] = useState(false)
   const [showResetConfirm, setShowResetConfirm] = useState(false)
-  
+
   // Usage form
   const [showUseModal, setShowUseModal] = useState(false)
   const [products, setProducts] = useState<any[]>([])
@@ -104,91 +117,165 @@ export default function MilkPoolPage() {
 
   const loadData = async () => {
     setLoading(true)
-    
-    // Load or create pool
-    let { data: pools } = await supabase
-      .from('milk_pool')
-      .select('*')
-      .eq('status', 'active')
-      .limit(1)
 
-    let currentPool = pools?.[0]
-    
-    if (!currentPool) {
+    // Load or create pool
+    const poolSnap = await getDocs(
+      query(collection(db, 'milk_pool'), where('status', '==', 'active'), limit(1))
+    )
+
+    let currentPool: MilkPool | null = null
+
+    if (!poolSnap.empty) {
+      const d = poolSnap.docs[0]
+      currentPool = { id: d.id, ...d.data() } as MilkPool
+    } else {
       // Create default pool
-      const { data: newPool } = await supabase
-        .from('milk_pool')
-        .insert({ name: 'Main Pool', status: 'active' })
-        .select()
-        .single()
-      currentPool = newPool
+      const newPoolRef = await addDoc(collection(db, 'milk_pool'), {
+        name: 'Main Pool',
+        status: 'active',
+        total_milk_liters: 0,
+        total_fat_units: 0,
+        total_snf_units: 0,
+        original_avg_fat: 0,
+        original_avg_snf: 0,
+        remaining_milk_liters: 0,
+        remaining_fat_units: 0,
+        remaining_snf_units: 0,
+        current_avg_fat: 0,
+        current_avg_snf: 0,
+        created_at: new Date().toISOString(),
+      })
+      const newPoolSnap = await getDoc(newPoolRef)
+      currentPool = { id: newPoolRef.id, ...newPoolSnap.data() } as MilkPool
     }
-    
+
     setPool(currentPool)
 
-    // Load available collections (approved, not yet in pool)
-    const { data: availableCollections } = await supabase
-      .from('milk_collections')
-      .select('*, suppliers(name)')
-      .eq('qc_status', 'approved')
-      .eq('status', 'new')
-      .order('created_at', { ascending: false })
+    // Load available collections (approved, not yet in pool) — fetch with supplier join
+    const colSnap = await getDocs(
+      query(
+        collection(db, 'milk_collections'),
+        where('qc_status', '==', 'approved'),
+        where('status', '==', 'new'),
+        orderBy('created_at', 'desc')
+      )
+    )
+    const availableCollections = await Promise.all(
+      colSnap.docs.map(async (d) => {
+        const item = { id: d.id, ...d.data() } as any
+        if (item.supplier_id) {
+          const sSnap = await getDoc(doc(db, 'suppliers', item.supplier_id))
+          item.suppliers = sSnap.exists() ? sSnap.data() : null
+        }
+        return item as Collection
+      })
+    )
+    setCollections(availableCollections)
 
-    setCollections(availableCollections || [])
-
-    // Load usage log
+    // Load usage log and products for the active pool
     if (currentPool) {
-      const { data: logs } = await supabase
-        .from('milk_usage_log')
-        .select('*')
-        .eq('milk_pool_id', currentPool.id)
-        .order('used_at', { ascending: false })
-        .limit(20)
-          
-      setUsageLog(logs || [])
-      
-      // Load products for the usage form
-      const { data: prodData } = await supabase
-        .from('products')
-        .select('id, name, sku')
-        .order('name')
-          
-      setProducts(prodData || [])
+      const logsSnap = await getDocs(
+        query(
+          collection(db, 'milk_usage_log'),
+          where('milk_pool_id', '==', currentPool.id),
+          orderBy('used_at', 'desc'),
+          limit(20)
+        )
+      )
+      setUsageLog(logsSnap.docs.map((d) => ({ id: d.id, ...d.data() } as UsageLog)))
+
+      const prodSnap = await getDocs(
+        query(collection(db, 'products'), orderBy('name'))
+      )
+      setProducts(prodSnap.docs.map((d) => ({ id: d.id, ...d.data() })))
     }
 
-    // Load archived pools
-    const { data: archivedData } = await supabase.rpc('get_archived_pools')
-    if (archivedData) {
-      setArchivedPools(typeof archivedData === 'string' ? JSON.parse(archivedData) : archivedData)
-    }
+    // Load archived pools (replace RPC get_archived_pools)
+    const archiveSnap = await getDocs(
+      query(collection(db, 'milk_pool'), where('status', '==', 'archived'), orderBy('archived_at', 'desc'))
+    )
+    const archived: ArchivedPool[] = archiveSnap.docs.map((d) => ({ id: d.id, ...d.data() } as ArchivedPool))
+    setArchivedPools(archived)
 
     setLoading(false)
   }
 
+  // Resolve current Firebase user's app_users doc id
+  const getCurrentAppUserId = async (): Promise<string | null> => {
+    const firebaseUser = auth.currentUser
+    if (!firebaseUser) return null
+    const appUserSnap = await getDocs(
+      query(collection(db, 'app_users'), where('auth_uid', '==', firebaseUser.uid), limit(1))
+    )
+    if (appUserSnap.empty) return null
+    return appUserSnap.docs[0].id
+  }
+
   const handleAddToPool = async () => {
     if (selectedCollections.length === 0 || !pool) return
-    
+
     setProcessing(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      const { data: appUser } = await supabase
-        .from('app_users')
-        .select('id')
-        .eq('auth_uid', user?.id)
-        .single()
+      // Fetch selected collection docs
+      const collectionDocs = await Promise.all(
+        selectedCollections.map((id) => getDoc(doc(db, 'milk_collections', id)))
+      )
 
-      const { data, error } = await supabase.rpc('add_collections_to_pool', {
-        p_pool_id: pool.id,
-        p_collection_ids: selectedCollections,
-        p_user_id: appUser?.id
+      // Compute new pool totals (implements add_collections_to_pool logic)
+      let addedLiters = 0
+      let addedFatUnits = 0
+      let addedSnfUnits = 0
+
+      for (const snap of collectionDocs) {
+        if (!snap.exists()) continue
+        const data = snap.data()
+        const liters = data.qty_liters || 0
+        const fat = data.fat || 0
+        const snf = data.snf || 0
+        addedLiters += liters
+        addedFatUnits += liters * fat
+        addedSnfUnits += liters * snf
+      }
+
+      const newTotalLiters = (pool.total_milk_liters || 0) + addedLiters
+      const newTotalFatUnits = (pool.total_fat_units || 0) + addedFatUnits
+      const newTotalSnfUnits = (pool.total_snf_units || 0) + addedSnfUnits
+      const newRemainingLiters = (pool.remaining_milk_liters || 0) + addedLiters
+      const newRemainingFatUnits = (pool.remaining_fat_units || 0) + addedFatUnits
+      const newRemainingSnfUnits = (pool.remaining_snf_units || 0) + addedSnfUnits
+
+      const newAvgFat = newTotalLiters > 0 ? newTotalFatUnits / newTotalLiters : 0
+      const newAvgSnf = newTotalLiters > 0 ? newTotalSnfUnits / newTotalLiters : 0
+
+      const newCurrentAvgFat = newRemainingLiters > 0 ? newRemainingFatUnits / newRemainingLiters : 0
+      const newCurrentAvgSnf = newRemainingLiters > 0 ? newRemainingSnfUnits / newRemainingLiters : 0
+
+      // Batch: update pool + mark each collection as 'in_pool'
+      const batch = writeBatch(db)
+
+      batch.update(doc(db, 'milk_pool', pool.id), {
+        total_milk_liters: newTotalLiters,
+        total_fat_units: newTotalFatUnits,
+        total_snf_units: newTotalSnfUnits,
+        original_avg_fat: newAvgFat,
+        original_avg_snf: newAvgSnf,
+        remaining_milk_liters: newRemainingLiters,
+        remaining_fat_units: newRemainingFatUnits,
+        remaining_snf_units: newRemainingSnfUnits,
+        current_avg_fat: newCurrentAvgFat,
+        current_avg_snf: newCurrentAvgSnf,
       })
 
-      if (error) throw error
-      
-      const result = typeof data === 'string' ? JSON.parse(data) : data
-      if (!result.success) throw new Error(result.error)
+      for (const id of selectedCollections) {
+        batch.update(doc(db, 'milk_collections', id), {
+          status: 'in_pool',
+          pool_id: pool.id,
+        })
+      }
 
-      alert(`Added ${result.added_liters}L to pool. New avg fat: ${result.new_avg_fat?.toFixed(2)}%`)
+      await batch.commit()
+
+      alert(`Added ${addedLiters.toFixed(2)}L to pool. New avg fat: ${newCurrentAvgFat.toFixed(2)}%`)
       setSelectedCollections([])
       loadData()
     } catch (err: any) {
@@ -204,22 +291,15 @@ export default function MilkPoolPage() {
 
     setProcessing(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      const { data: appUser } = await supabase
-        .from('app_users')
-        .select('id')
-        .eq('auth_uid', user?.id)
-        .single()
-
       const useLiters = parseFloat(useForm.liters)
       const manualFatPercent = parseFloat(useForm.fat_percent)
       const manualSnfPercent = parseFloat(useForm.snf_percent)
-      
+
       // Validate inputs
       if (useLiters <= 0 || useLiters > pool.remaining_milk_liters) {
         throw new Error('Invalid quantity')
       }
-      
+
       const maxFat = pool.remaining_fat_units / useLiters
       if (manualFatPercent > maxFat) {
         throw new Error(`Fat % cannot exceed ${maxFat.toFixed(2)}%`)
@@ -234,63 +314,52 @@ export default function MilkPoolPage() {
       const usedFatUnits = useLiters * manualFatPercent
       const newRemainingLiters = pool.remaining_milk_liters - useLiters
       const newRemainingFatUnits = pool.remaining_fat_units - usedFatUnits
-      const newAvgFat = newRemainingLiters > 0 ? (newRemainingFatUnits / newRemainingLiters) : 0
+      const newAvgFat = newRemainingLiters > 0 ? newRemainingFatUnits / newRemainingLiters : 0
 
       // Calculate SNF usage
       const usedSnfUnits = useLiters * manualSnfPercent
       const newRemainingSnfUnits = pool.remaining_snf_units - usedSnfUnits
-      const newAvgSnf = newRemainingLiters > 0 ? (newRemainingSnfUnits / newRemainingLiters) : 0
+      const newAvgSnf = newRemainingLiters > 0 ? newRemainingSnfUnits / newRemainingLiters : 0
 
       // Insert usage log
-      const { data: usageData, error: usageError } = await supabase
-        .from('milk_usage_log')
-        .insert({
-          milk_pool_id: pool.id,
-          used_liters: useLiters,
-          manual_fat_percent: manualFatPercent,
-          manual_snf_percent: manualSnfPercent,
-          used_fat_units: usedFatUnits,
-          used_snf_units: usedSnfUnits,
-          remaining_liters_after: newRemainingLiters,
-          remaining_fat_units_after: newRemainingFatUnits,
-          remaining_avg_fat_after: newAvgFat,
-          remaining_avg_snf_after: newAvgSnf,
-          purpose: useForm.purpose || null
-        })
-        .select()
-        .single()
-
-      if (usageError) throw usageError
+      await addDoc(collection(db, 'milk_usage_log'), {
+        milk_pool_id: pool.id,
+        used_liters: useLiters,
+        manual_fat_percent: manualFatPercent,
+        manual_snf_percent: manualSnfPercent,
+        used_fat_units: usedFatUnits,
+        used_snf_units: usedSnfUnits,
+        remaining_liters_after: newRemainingLiters,
+        remaining_fat_units_after: newRemainingFatUnits,
+        remaining_avg_fat_after: newAvgFat,
+        remaining_avg_snf_after: newAvgSnf,
+        purpose: useForm.purpose || null,
+        used_at: new Date().toISOString(),
+      })
 
       // Update pool
-      const { error: poolError } = await supabase
-        .from('milk_pool')
-        .update({
-          remaining_milk_liters: newRemainingLiters,
-          remaining_fat_units: newRemainingFatUnits,
-          remaining_snf_units: newRemainingSnfUnits,
-          current_avg_fat: newAvgFat,
-          current_avg_snf: newAvgSnf
-        })
-        .eq('id', pool.id)
-
-      if (poolError) throw poolError
+      await updateDoc(doc(db, 'milk_pool', pool.id), {
+        remaining_milk_liters: newRemainingLiters,
+        remaining_fat_units: newRemainingFatUnits,
+        remaining_snf_units: newRemainingSnfUnits,
+        current_avg_fat: newAvgFat,
+        current_avg_snf: newAvgSnf,
+      })
 
       // Create inventory items
-      const validItems = inventoryItems.filter(i => i.product_id && i.quantity)
+      const validItems = inventoryItems.filter((i) => i.product_id && i.quantity)
       if (validItems.length > 0) {
-        const inventoryRecords = validItems.map(item => ({
-          product_id: item.product_id,
-          qty: parseFloat(item.quantity),
-          fat_percent: manualFatPercent,
-          uom: item.unit
-        }))
-
-        const { error: invError } = await supabase
-          .from('inventory_items')
-          .insert(inventoryRecords)
-
-        if (invError) throw invError
+        await Promise.all(
+          validItems.map((item) =>
+            addDoc(collection(db, 'inventory_items'), {
+              product_id: item.product_id,
+              qty: parseFloat(item.quantity),
+              fat_percent: manualFatPercent,
+              uom: item.unit,
+              created_at: new Date().toISOString(),
+            })
+          )
+        )
       }
 
       alert(`Used ${useLiters}L @ ${manualFatPercent}% fat, ${manualSnfPercent}% SNF. ${validItems.length} inventory items created.`)
@@ -310,31 +379,28 @@ export default function MilkPoolPage() {
 
     setProcessing(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      const { data: appUser } = await supabase
-        .from('app_users')
-        .select('id')
-        .eq('auth_uid', user?.id)
-        .single()
+      const appUserId = await getCurrentAppUserId()
 
       const response = await fetch('/api/reset-pool', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           pool_id: pool.id,
-          user_id: appUser?.id
-        })
+          user_id: appUserId,
+        }),
       })
 
       const result = await response.json()
       if (!result.success) throw new Error(result.error)
 
-      alert(`${result.message}\n\nSummary:\n` +
-        `• Milk Used: ${result.summary?.milk_used?.toFixed(2) || 0}L\n` +
-        `• Collections: ${result.summary?.collections_count || 0}\n` +
-        `• Usages: ${result.summary?.usage_count || 0}\n` +
-        `• Inventory Items: ${result.summary?.inventory_count || 0}`)
-      
+      alert(
+        `${result.message}\n\nSummary:\n` +
+          `• Milk Used: ${result.summary?.milk_used?.toFixed(2) || 0}L\n` +
+          `• Collections: ${result.summary?.collections_count || 0}\n` +
+          `• Usages: ${result.summary?.usage_count || 0}\n` +
+          `• Inventory Items: ${result.summary?.inventory_count || 0}`
+      )
+
       setShowResetConfirm(false)
       loadData()
     } catch (err: any) {
@@ -345,8 +411,8 @@ export default function MilkPoolPage() {
   }
 
   const toggleCollection = (id: string) => {
-    setSelectedCollections(prev =>
-      prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]
+    setSelectedCollections((prev) =>
+      prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id]
     )
   }
 
@@ -571,17 +637,17 @@ export default function MilkPoolPage() {
                 >
                   <div>
                     <div className="font-medium text-gray-900">
-                      {archive.pool_name} 
+                      {archive.pool_name}
                       <span className="ml-2 text-xs bg-gray-200 px-2 py-1 rounded">Archived</span>
                     </div>
                     <div className="text-sm text-gray-600">
-                      Total: {archive.total_milk_liters?.toFixed(2)}L • 
-                      Remaining at reset: {archive.remaining_milk_liters?.toFixed(2)}L • 
-                      Original Fat: {archive.original_avg_fat?.toFixed(2)}% • 
+                      Total: {archive.total_milk_liters?.toFixed(2)}L •
+                      Remaining at reset: {archive.remaining_milk_liters?.toFixed(2)}L •
+                      Original Fat: {archive.original_avg_fat?.toFixed(2)}% •
                       Original SNF: {(archive as any).original_avg_snf?.toFixed(2) || '0.00'}%
                     </div>
                     <div className="text-xs text-gray-500 mt-1">
-                      {archive.usage_count} usages • {archive.collections_count} collections • 
+                      {archive.usage_count} usages • {archive.collections_count} collections •
                       Archived: {new Date(archive.archived_at).toLocaleString()}
                     </div>
                   </div>
@@ -661,7 +727,7 @@ export default function MilkPoolPage() {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
             <h2 className="text-xl font-bold mb-4 text-red-600">Reset Pool?</h2>
-            
+
             <div className="bg-red-50 p-4 rounded-lg mb-4 border border-red-200">
               <p className="text-red-800 font-medium mb-2">This will:</p>
               <ul className="text-sm text-red-700 list-disc list-inside space-y-1">

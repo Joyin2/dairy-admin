@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase/server'
+import { getCurrentUser, getAppUser } from '@/lib/firebase/server'
 import { redirect } from 'next/navigation'
 import DashboardSidebar from '@/components/dashboard/DashboardSidebar'
 
@@ -7,29 +7,18 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode
 }) {
-  const supabase = await createClient()
-  
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getCurrentUser()
 
   if (!user) {
     redirect('/login')
   }
 
-  // Get user role and status
-  const { data: appUser } = await supabase
-    .from('app_users')
-    .select('*')
-    .eq('auth_uid', user.id)
-    .single()
+  const appUser = await getAppUser(user.uid)
 
-  // Block delivery agents from accessing admin panel
   if (appUser?.role === 'delivery_agent') {
     redirect('/login')
   }
 
-  // Block inactive or pending users
   if (appUser?.status !== 'active') {
     redirect('/login')
   }

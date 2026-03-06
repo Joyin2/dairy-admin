@@ -3,13 +3,13 @@
 import { useEffect, useState } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, orderBy, doc, deleteDoc, updateDoc, getDoc } from 'firebase/firestore'
 
 export default function RouteDetailPage() {
   const router = useRouter()
   const params = useParams()
-  const supabase = createClient()
-  
+
   const [route, setRoute] = useState<any>(null)
   const [agents, setAgents] = useState<any[]>([])
   const [shops, setShops] = useState<any[]>([])
@@ -23,53 +23,55 @@ export default function RouteDetailPage() {
 
   useEffect(() => {
     const fetchData = async () => {
-      const [routeRes, agentsRes, shopsRes, availableRes] = await Promise.all([
-        supabase.from('routes').select('*, agent:app_users!routes_agent_id_fkey(name, email), created_by_user:app_users!routes_created_by_fkey(name, email)').eq('id', params.id).single(),
-        supabase.from('app_users').select('id, name, email').eq('role', 'delivery_agent').eq('status', 'active').order('name'),
-        supabase.from('shops').select('*').eq('route_id', params.id).order('name'),
-        supabase.from('shops').select('*').is('route_id', null).eq('status', 'approved').order('name'),
+      const routeId = params.id as string
+
+      const [routeSnap, agentsSnap, shopsSnap, allShopsSnap] = await Promise.all([
+        getDoc(doc(db, 'routes', routeId)),
+        getDocs(query(collection(db, 'app_users'), where('role', '==', 'delivery_agent'), where('status', '==', 'active'))),
+        getDocs(query(collection(db, 'shops'), where('route_id', '==', routeId))),
+        getDocs(query(collection(db, 'shops'), where('status', 'in', ['approved', 'pending_approval']))),
       ])
-      
-      if (routeRes.error) {
+
+      if (!routeSnap.exists()) {
         setError('Route not found')
       } else {
-        setRoute(routeRes.data)
+        const routeData = { id: routeSnap.id, ...routeSnap.data() } as any
+        // Fetch agent data if exists
+        if (routeData.agent_id) {
+          const agentSnap = await getDoc(doc(db, 'app_users', routeData.agent_id))
+          if (agentSnap.exists()) {
+            (routeData as any).agent = { id: agentSnap.id, ...agentSnap.data() }
+          }
+        }
+        setRoute(routeData)
       }
-      setAgents(agentsRes.data || [])
-      setShops(shopsRes.data || [])
-      setAvailableShops(availableRes.data || [])
+
+      const agentList = agentsSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[]
+      agentList.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+      setAgents(agentList)
+
+      const shopList = shopsSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[]
+      shopList.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+      setShops(shopList)
+
+      // Available = approved/no-status shops not assigned to any route (filter client-side)
+      const allShops = allShopsSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[]
+      const available = allShops.filter(s => !s.route_id)
+      available.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+      setAvailableShops(available)
       setLoading(false)
     }
     fetchData()
-
-    // Real-time subscription for route updates
-    const channel = supabase
-      .channel(`route-${params.id}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'routes',
-          filter: `id=eq.${params.id}`,
-        },
-        (payload) => {
-          setRoute(payload.new)
-        }
-      )
-      .subscribe()
-
-    return () => {
-      supabase.removeChannel(channel)
-    }
-  }, [params.id, supabase])
+  }, [params.id])
 
   const handleAssignAgent = async (agentId: string) => {
     setSaving(true)
-    const { error } = await supabase.from('routes').update({ agent_id: agentId || null }).eq('id', params.id)
-    if (!error) {
+    try {
+      await updateDoc(doc(db, 'routes', params.id as string), { agent_id: agentId || null })
       const agentData = agents.find(a => a.id === agentId)
       setRoute({ ...route, agent_id: agentId, agent: agentData })
+    } catch (err: any) {
+      setError(err.message)
     }
     setSaving(false)
   }
@@ -79,41 +81,33 @@ export default function RouteDetailPage() {
       alert('Select shop')
       return
     }
-    
+
     setSaving(true)
-    const { error } = await supabase
-      .from('shops')
-      .update({ route_id: params.id })
-      .eq('id', selectedShopId)
-    
-    if (!error) {
+    try {
+      await updateDoc(doc(db, 'shops', selectedShopId), { route_id: params.id as string })
       const shop = availableShops.find(s => s.id === selectedShopId)
       setShops([...shops, shop].sort((a, b) => a.name.localeCompare(b.name)))
       setAvailableShops(availableShops.filter(s => s.id !== selectedShopId))
       setShowAddShop(false)
       setSelectedShopId('')
       setNewSequence('')
-    } else {
-      alert('Failed: ' + error.message)
+    } catch (err: any) {
+      alert('Failed: ' + err.message)
     }
     setSaving(false)
   }
 
   const handleRemoveShop = async (shopId: string) => {
     if (!confirm('Remove this shop from route?')) return
-    
+
     setSaving(true)
-    const { error } = await supabase
-      .from('shops')
-      .update({ route_id: null })
-      .eq('id', shopId)
-    
-    if (!error) {
+    try {
+      await updateDoc(doc(db, 'shops', shopId), { route_id: null })
       const shop = shops.find(s => s.id === shopId)
       setShops(shops.filter(s => s.id !== shopId))
       setAvailableShops([...availableShops, shop].sort((a, b) => a.name.localeCompare(b.name)))
-    } else {
-      alert('Failed: ' + error.message)
+    } catch (err: any) {
+      alert('Failed: ' + err.message)
     }
     setSaving(false)
   }
@@ -127,11 +121,11 @@ export default function RouteDetailPage() {
   const handleDeleteRoute = async () => {
     if (!confirm('Are you sure you want to delete this route?')) return
     setSaving(true)
-    const { error } = await supabase.from('routes').delete().eq('id', params.id)
-    if (!error) {
+    try {
+      await deleteDoc(doc(db, 'routes', params.id as string))
       router.push('/dashboard/routes')
       router.refresh()
-    } else {
+    } catch (err: any) {
       setError('Failed to delete route')
     }
     setSaving(false)
@@ -162,7 +156,7 @@ export default function RouteDetailPage() {
   const stops = route.stops || []
   const completedStops = stops.filter((s: any) => s.status === 'completed').length
   const totalShops = shops.length
-  const approvedShops = shops.filter(s => s.status === 'approved').length
+  const approvedShops = shops.filter(s => !s.status || s.status === 'approved').length
 
   return (
     <div className="space-y-6">
@@ -289,11 +283,12 @@ export default function RouteDetailPage() {
                   <td className="px-6 py-4 text-sm text-gray-700">{shop.city || 'N/A'}</td>
                   <td className="px-6 py-4">
                     <span className={`px-2 py-1 text-xs rounded-full ${
-                      shop.status === 'approved' ? 'bg-green-100 text-green-800' :
+                      (!shop.status || shop.status === 'approved') ? 'bg-green-100 text-green-800' :
                       shop.status === 'pending_approval' ? 'bg-yellow-100 text-yellow-800' :
                       'bg-gray-100 text-gray-800'
                     }`}>
-                      {shop.status}
+                      {!shop.status || shop.status === 'approved' ? 'Approved' :
+                       shop.status === 'pending_approval' ? 'Pending' : shop.status}
                     </span>
                   </td>
                   <td className="px-6 py-4 text-right">

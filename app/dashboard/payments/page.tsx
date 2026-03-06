@@ -2,7 +2,8 @@
 
 import React, { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { createClient } from '@/lib/supabase/client'
+import { db, auth } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, doc, getDoc, updateDoc, addDoc } from 'firebase/firestore'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import * as XLSX from 'xlsx'
@@ -29,7 +30,6 @@ interface Shop {
 }
 
 export default function PaymentsPage() {
-  const supabase = createClient()
   const [activeView, setActiveView] = useState<'dashboard' | 'transactions' | 'shop-ledger' | 'agent-ledger' | 'add-payment'>('dashboard')
   const [stats, setStats] = useState<DashboardStats>({
     todaySales: 0,
@@ -64,57 +64,46 @@ export default function PaymentsPage() {
 
   const fetchStats = async () => {
     try {
-      // Get today's start
       const today = new Date()
       today.setHours(0, 0, 0, 0)
-      
-      // Get month start
       const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
 
-      // Fetch deliveries for sales data
-      const { data: deliveries } = await supabase
-        .from('deliveries')
-        .select('expected_amount, collected_amount, status, created_at')
-        .in('status', ['delivered', 'partial'])
+      // Fetch deliveries
+      const deliveriesSnap = await getDocs(query(
+        collection(db, 'deliveries'),
+        where('status', 'in', ['delivered', 'partial'])
+      ))
+      const deliveriesData = deliveriesSnap.docs.map(d => ({ id: d.id, ...d.data() } as any))
 
-      // Fetch ledger entries for cash tracking
-      const { data: ledger } = await supabase
-        .from('ledger_entries')
-        .select('amount, cleared, created_at, created_by')
+      // Fetch ledger entries
+      const ledgerSnap = await getDocs(collection(db, 'ledger_entries'))
+      const ledgerData = ledgerSnap.docs.map(d => ({ id: d.id, ...d.data() } as any))
 
       // Fetch agent allocations for pending submissions
-      const { data: allocations } = await supabase
-        .from('agent_stock_allocations')
-        .select('id, agent_id, status')
-        .in('status', ['picked_up', 'in_delivery'])
+      const allocSnap = await getDocs(query(
+        collection(db, 'agent_stock_allocations'),
+        where('status', 'in', ['picked_up', 'in_delivery'])
+      ))
+      const allocations = allocSnap.docs.map(d => ({ id: d.id, ...d.data() } as any))
 
-      const deliveriesData = deliveries || []
-      const ledgerData = ledger || []
-
-      // Calculate today's sales
       const todaySales = deliveriesData
         .filter(d => new Date(d.created_at) >= today)
         .reduce((sum, d) => sum + parseFloat(String(d.expected_amount || 0)), 0)
 
-      // Calculate month's sales
       const monthSales = deliveriesData
         .filter(d => new Date(d.created_at) >= monthStart)
         .reduce((sum, d) => sum + parseFloat(String(d.expected_amount || 0)), 0)
 
-      // Calculate cash collected (cleared ledger entries)
       const totalCashCollected = ledgerData
         .filter(l => l.cleared)
         .reduce((sum, l) => sum + parseFloat(String(l.amount || 0)), 0)
 
-      // Calculate outstanding (expected - collected from deliveries)
       const totalExpected = deliveriesData.reduce((sum, d) => sum + parseFloat(String(d.expected_amount || 0)), 0)
       const totalCollected = deliveriesData.reduce((sum, d) => sum + parseFloat(String(d.collected_amount || 0)), 0)
       const totalOutstanding = Math.max(0, totalExpected - totalCollected)
 
-      // Agent pending submission (from allocations)
-      const agentPendingSubmission = (allocations || []).length
+      const agentPendingSubmission = allocations.length
 
-      // Overdue payments (outstanding for more than 7 days)
       const sevenDaysAgo = new Date()
       sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
       const overdueDeliveries = deliveriesData.filter(d => {
@@ -141,60 +130,76 @@ export default function PaymentsPage() {
 
   const fetchRecentPayments = async () => {
     try {
-      // Fetch ALL deliveries (the master transaction table)
-      const { data: deliveriesData } = await supabase
-        .from('deliveries')
-        .select('id, route_id, shop_id, status, expected_amount, collected_amount, delivered_at, completed_at, created_at, payment_mode, shops(name), routes(name, agent_id)')
-        .order('created_at', { ascending: false })
+      // Fetch all deliveries
+      const deliveriesSnap = await getDocs(query(collection(db, 'deliveries')))
+      const deliveriesData = deliveriesSnap.docs.map(d => ({ id: d.id, ...d.data() } as any))
 
-      // Fetch delivery_sales for product details
-      const { data: salesData } = await supabase
-        .from('delivery_sales')
-        .select('id, delivery_id, product_name, batch_number, quantity_sold, unit, price_per_unit, total_amount')
-        .order('created_at', { ascending: false })
+      // Fetch delivery_sales
+      const salesSnap = await getDocs(collection(db, 'delivery_sales'))
+      const salesData = salesSnap.docs.map(d => ({ id: d.id, ...d.data() } as any))
 
-      // Fetch ledger_entries (manual payments not tied to deliveries)
-      const { data: ledgerData } = await supabase
-        .from('ledger_entries')
-        .select('*, creator:app_users!ledger_entries_created_by_fkey(name)')
-        .order('created_at', { ascending: false })
+      // Fetch ledger entries
+      const ledgerSnap = await getDocs(collection(db, 'ledger_entries'))
+      const ledgerData = ledgerSnap.docs.map(d => ({ id: d.id, ...d.data() } as any))
 
-      // Build a map of delivery_id -> sales items
+      // Collect unique shop IDs and route IDs
+      const shopIds = [...new Set(deliveriesData.map(d => d.shop_id).filter(Boolean))]
+      const routeIds = [...new Set(deliveriesData.map(d => d.route_id).filter(Boolean))]
+
+      // Fetch shops
+      const shopMap: Record<string, any> = {}
+      for (let i = 0; i < shopIds.length; i += 10) {
+        const chunk = shopIds.slice(i, i + 10)
+        const q = query(collection(db, 'shops'), where('__name__', 'in', chunk))
+        const snap = await getDocs(q)
+        snap.docs.forEach(d => { shopMap[d.id] = { id: d.id, ...d.data() } })
+      }
+
+      // Fetch routes
+      const routeMap: Record<string, any> = {}
+      for (let i = 0; i < routeIds.length; i += 10) {
+        const chunk = routeIds.slice(i, i + 10)
+        const q = query(collection(db, 'routes'), where('__name__', 'in', chunk))
+        const snap = await getDocs(q)
+        snap.docs.forEach(d => { routeMap[d.id] = { id: d.id, ...d.data() } })
+      }
+
+      // Fetch agents for routes
+      const agentIds = [...new Set(Object.values(routeMap).map((r: any) => r.agent_id).filter(Boolean))]
+      const agentMap: Record<string, string> = {}
+      for (let i = 0; i < agentIds.length; i += 10) {
+        const chunk = agentIds.slice(i, i + 10)
+        const q = query(collection(db, 'app_users'), where('__name__', 'in', chunk))
+        const snap = await getDocs(q)
+        snap.docs.forEach(d => { agentMap[d.id] = (d.data() as any).name })
+      }
+
+      // Fetch creator names for ledger entries
+      const creatorIds = [...new Set(ledgerData.map(l => l.created_by).filter(Boolean))]
+      const creatorMap: Record<string, string> = {}
+      for (let i = 0; i < creatorIds.length; i += 10) {
+        const chunk = creatorIds.slice(i, i + 10)
+        const q = query(collection(db, 'app_users'), where('__name__', 'in', chunk))
+        const snap = await getDocs(q)
+        snap.docs.forEach(d => { creatorMap[d.id] = (d.data() as any).name })
+      }
+
+      // Build sales by delivery map
       const salesByDelivery: Record<string, any[]> = {}
-      for (const sale of (salesData || [])) {
+      for (const sale of salesData) {
         if (!salesByDelivery[sale.delivery_id]) salesByDelivery[sale.delivery_id] = []
         salesByDelivery[sale.delivery_id].push(sale)
       }
 
-      // Build a set of delivery IDs referenced in ledger entries
       const ledgerDeliveryRefs = new Set(
-        (ledgerData || []).filter(l => l.reference).map(l => l.reference)
+        ledgerData.filter(l => l.reference).map(l => l.reference)
       )
 
-      // Map agent IDs to names
-      const agentIds = [...new Set((deliveriesData || []).map(d => {
-        const route = Array.isArray(d.routes) ? d.routes[0] : d.routes
-        return route?.agent_id
-      }).filter(Boolean))]
-      
-      let agentMap: Record<string, string> = {}
-      if (agentIds.length > 0) {
-        const { data: agentData } = await supabase
-          .from('app_users')
-          .select('id, name')
-          .in('id', agentIds)
-        for (const a of (agentData || [])) {
-          agentMap[a.id] = a.name
-        }
-      }
-
-      // Create unified transaction list
       const transactions: any[] = []
 
-      // Add delivery transactions
-      for (const d of (deliveriesData || [])) {
-        const shop = Array.isArray(d.shops) ? d.shops[0] : d.shops
-        const route = Array.isArray(d.routes) ? d.routes[0] : d.routes
+      for (const d of deliveriesData) {
+        const shop = shopMap[d.shop_id]
+        const route = routeMap[d.route_id]
         const products = salesByDelivery[d.id] || []
         const productSummary = products.map(p => `${p.product_name} (${parseFloat(p.quantity_sold).toFixed(1)} ${p.unit})`).join(', ')
 
@@ -216,19 +221,15 @@ export default function PaymentsPage() {
         })
       }
 
-      // Add manual ledger entries (ones NOT created by delivery trigger)
-      for (const l of (ledgerData || [])) {
-        if (l.reference && ledgerDeliveryRefs.has(l.reference)) {
-          // This is a delivery-triggered entry, already covered above
-          continue
-        }
+      for (const l of ledgerData) {
+        if (l.reference && ledgerDeliveryRefs.has(l.reference)) continue
         transactions.push({
           id: l.id,
           type: 'manual_payment',
           date: l.created_at,
           shop_name: l.from_account || '-',
           route_name: '-',
-          agent_name: l.creator?.name || 'System',
+          agent_name: l.created_by ? (creatorMap[l.created_by] || 'System') : 'System',
           agent_id: l.created_by,
           products: '-',
           sale_amount: 0,
@@ -243,9 +244,7 @@ export default function PaymentsPage() {
         })
       }
 
-      // Sort by date descending
       transactions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-
       setPayments(transactions)
     } catch (err) {
       console.error('Error fetching transactions:', err)
@@ -253,22 +252,23 @@ export default function PaymentsPage() {
   }
 
   const fetchAgents = async () => {
-    const { data } = await supabase
-      .from('app_users')
-      .select('id, name, email')
-      .eq('role', 'delivery_agent')
-      .eq('status', 'active')
-      .order('name')
-    setAgents(data || [])
+    const q = query(
+      collection(db, 'app_users'),
+      where('role', '==', 'delivery_agent'),
+      where('status', '==', 'active')
+    )
+    const snap = await getDocs(q)
+    const data = snap.docs.map(d => ({ id: d.id, ...d.data() } as any))
+    data.sort((a: any, b: any) => a.name.localeCompare(b.name))
+    setAgents(data)
   }
 
   const fetchShops = async () => {
-    const { data } = await supabase
-      .from('shops')
-      .select('id, name')
-      .eq('status', 'approved')
-      .order('name')
-    setShops(data || [])
+    const q = query(collection(db, 'shops'), where('status', '==', 'approved'))
+    const snap = await getDocs(q)
+    const data = snap.docs.map(d => ({ id: d.id, ...d.data() } as any))
+    data.sort((a: any, b: any) => a.name.localeCompare(b.name))
+    setShops(data)
   }
 
   return (
@@ -318,8 +318,8 @@ export default function PaymentsPage() {
 
       {/* Transactions View */}
       {activeView === 'transactions' && (
-        <TransactionsView 
-          payments={payments} 
+        <TransactionsView
+          payments={payments}
           agents={agents}
           onRefresh={fetchData}
         />
@@ -327,7 +327,7 @@ export default function PaymentsPage() {
 
       {/* Shop Ledger View */}
       {activeView === 'shop-ledger' && (
-        <ShopLedgerView 
+        <ShopLedgerView
           shops={shops}
           selectedShop={selectedShop}
           onSelectShop={setSelectedShop}
@@ -336,7 +336,7 @@ export default function PaymentsPage() {
 
       {/* Agent Ledger View */}
       {activeView === 'agent-ledger' && (
-        <AgentLedgerView 
+        <AgentLedgerView
           agents={agents}
           selectedAgent={selectedAgent}
           onSelectAgent={setSelectedAgent}
@@ -419,16 +419,16 @@ function DashboardView({ stats }: { stats: DashboardStats }) {
             <div className="flex justify-between text-sm mb-1">
               <span className="text-gray-600">Collection Efficiency</span>
               <span className="font-medium text-gray-900">
-                {stats.monthSales > 0 
-                  ? ((stats.totalCashCollected / stats.monthSales) * 100).toFixed(1) 
+                {stats.monthSales > 0
+                  ? ((stats.totalCashCollected / stats.monthSales) * 100).toFixed(1)
                   : 0}%
               </span>
             </div>
             <div className="w-full bg-gray-200 rounded-full h-2">
-              <div 
+              <div
                 className="bg-green-500 h-2 rounded-full transition-all"
-                style={{ 
-                  width: `${stats.monthSales > 0 ? Math.min((stats.totalCashCollected / stats.monthSales) * 100, 100) : 0}%` 
+                style={{
+                  width: `${stats.monthSales > 0 ? Math.min((stats.totalCashCollected / stats.monthSales) * 100, 100) : 0}%`
                 }}
               />
             </div>
@@ -437,16 +437,16 @@ function DashboardView({ stats }: { stats: DashboardStats }) {
             <div className="flex justify-between text-sm mb-1">
               <span className="text-gray-600">Outstanding Ratio</span>
               <span className="font-medium text-gray-900">
-                {stats.monthSales > 0 
-                  ? ((stats.totalOutstanding / stats.monthSales) * 100).toFixed(1) 
+                {stats.monthSales > 0
+                  ? ((stats.totalOutstanding / stats.monthSales) * 100).toFixed(1)
                   : 0}%
               </span>
             </div>
             <div className="w-full bg-gray-200 rounded-full h-2">
-              <div 
+              <div
                 className="bg-orange-500 h-2 rounded-full transition-all"
-                style={{ 
-                  width: `${stats.monthSales > 0 ? Math.min((stats.totalOutstanding / stats.monthSales) * 100, 100) : 0}%` 
+                style={{
+                  width: `${stats.monthSales > 0 ? Math.min((stats.totalOutstanding / stats.monthSales) * 100, 100) : 0}%`
                 }}
               />
             </div>
@@ -458,16 +458,15 @@ function DashboardView({ stats }: { stats: DashboardStats }) {
 }
 
 // Transactions View Component
-function TransactionsView({ 
-  payments, 
+function TransactionsView({
+  payments,
   agents,
-  onRefresh 
-}: { 
+  onRefresh
+}: {
   payments: any[]
   agents: Agent[]
   onRefresh: () => void
 }) {
-  const supabase = createClient()
   const [agentFilter, setAgentFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
@@ -505,10 +504,9 @@ function TransactionsView({
   }, [payments, agentFilter, statusFilter, typeFilter, dateFilter])
 
   const handleClearPayment = async (ledgerId: string) => {
-    const { error } = await supabase.from('ledger_entries').update({ cleared: true }).eq('id', ledgerId)
-    if (!error) {
-      onRefresh()
-    }
+    const docRef = doc(db, 'ledger_entries', ledgerId)
+    await updateDoc(docRef, { cleared: true })
+    onRefresh()
   }
 
   const totalSales = filteredPayments.reduce((sum, p) => sum + (p.sale_amount || 0), 0)
@@ -517,7 +515,7 @@ function TransactionsView({
 
   const getStatusBadge = (tx: any) => {
     if (tx.type === 'manual_payment') {
-      return tx.cleared 
+      return tx.cleared
         ? <span className="px-2 py-1 text-xs font-semibold rounded bg-green-100 text-green-800">Cleared</span>
         : <span className="px-2 py-1 text-xs font-semibold rounded bg-yellow-100 text-yellow-800">Pending</span>
     }
@@ -749,17 +747,16 @@ function TransactionsView({
   )
 }
 
-// Shop Ledger View - Professional ERP-level shop financial ledger
-function ShopLedgerView({ 
-  shops, 
-  selectedShop, 
-  onSelectShop 
-}: { 
+// Shop Ledger View
+function ShopLedgerView({
+  shops,
+  selectedShop,
+  onSelectShop
+}: {
   shops: Shop[]
   selectedShop: string | null
   onSelectShop: (id: string | null) => void
 }) {
-  const supabase = createClient()
   const [shopInfo, setShopInfo] = useState<any>(null)
   const [ledgerEntries, setLedgerEntries] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
@@ -786,78 +783,94 @@ function ShopLedgerView({
   const fetchShopLedger = async (shopId: string) => {
     setLoading(true)
     try {
-      // 1. Fetch shop details with route info
-      const { data: shop } = await supabase
-        .from('shops')
-        .select('id, name, owner_name, contact, address, city, payment_terms, credit_limit, route_id, routes(name, area)')
-        .eq('id', shopId)
-        .single()
-      setShopInfo(shop)
+      // 1. Fetch shop details
+      const shopSnap = await getDoc(doc(db, 'shops', shopId))
+      const shopData = shopSnap.exists() ? { id: shopSnap.id, ...shopSnap.data() } as any : null
 
-      // 2. Fetch all deliveries for this shop
-      let deliveryQuery = supabase
-        .from('deliveries')
-        .select('id, route_id, status, expected_amount, collected_amount, delivered_at, created_at, payment_mode, routes(name, agent_id)')
-        .eq('shop_id', shopId)
-        .order('created_at', { ascending: true })
+      // Fetch route for shop
+      if (shopData?.route_id) {
+        const routeSnap = await getDoc(doc(db, 'routes', shopData.route_id))
+        if (routeSnap.exists()) {
+          shopData.routes = { id: routeSnap.id, ...routeSnap.data() }
+        }
+      }
+      setShopInfo(shopData)
 
-      if (dateFrom) deliveryQuery = deliveryQuery.gte('created_at', dateFrom)
-      if (dateTo) deliveryQuery = deliveryQuery.lte('created_at', dateTo + 'T23:59:59')
+      // 2. Fetch deliveries for this shop
+      let deliveriesQ = query(collection(db, 'deliveries'), where('shop_id', '==', shopId))
+      const deliveriesSnap = await getDocs(deliveriesQ)
+      let deliveries = deliveriesSnap.docs.map(d => ({ id: d.id, ...d.data() } as any))
 
-      const { data: deliveries } = await deliveryQuery
+      // Apply date filters
+      if (dateFrom) deliveries = deliveries.filter(d => d.created_at >= dateFrom)
+      if (dateTo) deliveries = deliveries.filter(d => d.created_at <= dateTo + 'T23:59:59')
+      deliveries.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+
+      const deliveryIds = deliveries.map(d => d.id)
 
       // 3. Fetch delivery_sales for these deliveries
-      const deliveryIds = (deliveries || []).map(d => d.id)
-      let salesByDelivery: Record<string, any[]> = {}
+      const salesByDelivery: Record<string, any[]> = {}
       if (deliveryIds.length > 0) {
-        const { data: salesData } = await supabase
-          .from('delivery_sales')
-          .select('delivery_id, product_name, batch_number, quantity_sold, unit, price_per_unit, total_amount')
-          .in('delivery_id', deliveryIds)
-        for (const s of (salesData || [])) {
-          if (!salesByDelivery[s.delivery_id]) salesByDelivery[s.delivery_id] = []
-          salesByDelivery[s.delivery_id].push(s)
+        for (let i = 0; i < deliveryIds.length; i += 10) {
+          const chunk = deliveryIds.slice(i, i + 10)
+          const q = query(collection(db, 'delivery_sales'), where('delivery_id', 'in', chunk))
+          const snap = await getDocs(q)
+          snap.docs.forEach(d => {
+            const s = { id: d.id, ...d.data() } as any
+            if (!salesByDelivery[s.delivery_id]) salesByDelivery[s.delivery_id] = []
+            salesByDelivery[s.delivery_id].push(s)
+          })
         }
       }
 
-      // 4. Fetch manual ledger entries (payments) for this shop
-      const shopName = shop?.name || ''
-      let ledgerQuery = supabase
-        .from('ledger_entries')
-        .select('id, amount, mode, reference, cleared, created_at, created_by, creator:app_users!ledger_entries_created_by_fkey(name)')
-        .eq('from_account', shopName)
-        .order('created_at', { ascending: true })
-
-      if (dateFrom) ledgerQuery = ledgerQuery.gte('created_at', dateFrom)
-      if (dateTo) ledgerQuery = ledgerQuery.lte('created_at', dateTo + 'T23:59:59')
-
-      const { data: ledgerData } = await ledgerQuery
-
-      // 5. Get agent names for deliveries
-      const agentIds = [...new Set((deliveries || []).map(d => {
-        const route = Array.isArray(d.routes) ? d.routes[0] : d.routes
-        return route?.agent_id
-      }).filter(Boolean))]
-      
-      let agentMap: Record<string, string> = {}
-      if (agentIds.length > 0) {
-        const { data: agentData } = await supabase
-          .from('app_users')
-          .select('id, name')
-          .in('id', agentIds)
-        for (const a of (agentData || [])) agentMap[a.id] = a.name
+      // 4. Fetch routes for deliveries
+      const routeIds = [...new Set(deliveries.map(d => d.route_id).filter(Boolean))]
+      const routeMap: Record<string, any> = {}
+      for (let i = 0; i < routeIds.length; i += 10) {
+        const chunk = routeIds.slice(i, i + 10)
+        const q = query(collection(db, 'routes'), where('__name__', 'in', chunk))
+        const snap = await getDocs(q)
+        snap.docs.forEach(d => { routeMap[d.id] = { id: d.id, ...d.data() } })
       }
 
-      // 6. Build delivery-triggered ledger reference set
+      // 5. Fetch agent names
+      const agentIds = [...new Set(Object.values(routeMap).map((r: any) => r.agent_id).filter(Boolean))]
+      const agentMap: Record<string, string> = {}
+      for (let i = 0; i < agentIds.length; i += 10) {
+        const chunk = agentIds.slice(i, i + 10)
+        const q = query(collection(db, 'app_users'), where('__name__', 'in', chunk))
+        const snap = await getDocs(q)
+        snap.docs.forEach(d => { agentMap[d.id] = (d.data() as any).name })
+      }
+
+      // 6. Fetch manual ledger entries for this shop
+      const shopName = shopData?.name || ''
+      let ledgerQ = query(collection(db, 'ledger_entries'), where('from_account', '==', shopName))
+      const ledgerSnap = await getDocs(ledgerQ)
+      let ledgerData = ledgerSnap.docs.map(d => ({ id: d.id, ...d.data() } as any))
+
+      if (dateFrom) ledgerData = ledgerData.filter(l => l.created_at >= dateFrom)
+      if (dateTo) ledgerData = ledgerData.filter(l => l.created_at <= dateTo + 'T23:59:59')
+
+      // Fetch creator names for ledger entries
+      const creatorIds = [...new Set(ledgerData.map(l => l.created_by).filter(Boolean))]
+      const creatorMap: Record<string, string> = {}
+      for (let i = 0; i < creatorIds.length; i += 10) {
+        const chunk = creatorIds.slice(i, i + 10)
+        const q = query(collection(db, 'app_users'), where('__name__', 'in', chunk))
+        const snap = await getDocs(q)
+        snap.docs.forEach(d => { creatorMap[d.id] = (d.data() as any).name })
+      }
+
       const deliveryLedgerRefs = new Set(
-        (ledgerData || []).filter(l => l.reference && deliveryIds.includes(l.reference)).map(l => l.reference)
+        ledgerData.filter(l => l.reference && deliveryIds.includes(l.reference)).map(l => l.reference)
       )
 
       // 7. Build unified ledger entries
       const entries: any[] = []
 
-      for (const d of (deliveries || [])) {
-        const route = Array.isArray(d.routes) ? d.routes[0] : d.routes
+      for (const d of deliveries) {
+        const route = routeMap[d.route_id]
         const products = salesByDelivery[d.id] || []
         const batchNos = [...new Set(products.map(p => p.batch_number))].join(', ')
         const productSummary = products.map(p => `${p.product_name} x${parseFloat(p.quantity_sold).toFixed(1)}`).join(', ')
@@ -879,8 +892,7 @@ function ShopLedgerView({
         })
       }
 
-      // Add manual payments (not tied to deliveries)
-      for (const l of (ledgerData || [])) {
+      for (const l of ledgerData) {
         if (l.reference && deliveryLedgerRefs.has(l.reference)) continue
         entries.push({
           id: l.id,
@@ -888,7 +900,7 @@ function ShopLedgerView({
           date: l.created_at,
           ref: l.reference || l.id.slice(0, 8).toUpperCase(),
           route_name: '-',
-          agent_name: ((l as any).creator?.name) || (Array.isArray((l as any).creator) ? (l as any).creator[0]?.name : 'System'),
+          agent_name: l.created_by ? (creatorMap[l.created_by] || 'System') : 'System',
           batch_numbers: '-',
           products: 'Manual Payment',
           product_count: 0,
@@ -902,18 +914,15 @@ function ShopLedgerView({
       // Sort by date ascending for running balance
       entries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
-      // Calculate running balance
       let runningBalance = 0
       for (const entry of entries) {
         runningBalance += entry.sale_amount - entry.paid_amount
         entry.running_balance = runningBalance
       }
 
-      // Reverse for display (newest first)
       entries.reverse()
       setLedgerEntries(entries)
 
-      // Calculate summary
       const totalSales = entries.reduce((s, e) => s + e.sale_amount, 0)
       const totalPaid = entries.reduce((s, e) => s + e.paid_amount, 0)
       const lastPayment = entries.find(e => e.paid_amount > 0)
@@ -936,7 +945,6 @@ function ShopLedgerView({
     const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
     const pageWidth = doc.internal.pageSize.getWidth()
 
-    // --- Title ---
     doc.setFontSize(18)
     doc.setFont('helvetica', 'bold')
     doc.text('Shop Ledger Statement', pageWidth / 2, 15, { align: 'center' })
@@ -947,7 +955,6 @@ function ShopLedgerView({
     doc.text(`Generated: ${new Date().toLocaleString('en-IN')}`, pageWidth / 2, 21, { align: 'center' })
     doc.setTextColor(0)
 
-    // --- Shop Info ---
     let y = 28
     doc.setFontSize(12)
     doc.setFont('helvetica', 'bold')
@@ -956,7 +963,7 @@ function ShopLedgerView({
 
     doc.setFontSize(9)
     doc.setFont('helvetica', 'normal')
-    const routeName = Array.isArray(shopInfo.routes) ? shopInfo.routes[0]?.name : shopInfo.routes?.name
+    const routeName = shopInfo.routes?.name
     const infoLines: string[] = []
     if (shopInfo.owner_name) infoLines.push(`Owner: ${shopInfo.owner_name}`)
     if (shopInfo.contact) infoLines.push(`Contact: ${shopInfo.contact}`)
@@ -971,7 +978,6 @@ function ShopLedgerView({
     }
     y += 2
 
-    // --- Summary Box ---
     doc.setFillColor(245, 245, 250)
     doc.roundedRect(14, y, pageWidth - 28, 14, 2, 2, 'F')
     doc.setFontSize(9)
@@ -988,7 +994,6 @@ function ShopLedgerView({
     })
     y += 20
 
-    // --- Ledger Table ---
     const tableData = ledgerEntries.map(entry => [
       new Date(entry.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
       entry.type === 'sale' ? 'Sale' : 'Payment',
@@ -1029,7 +1034,6 @@ function ShopLedgerView({
       },
     })
 
-    // --- Footer on each page ---
     const totalPages = (doc as any).getNumberOfPages()
     for (let i = 1; i <= totalPages; i++) {
       doc.setPage(i)
@@ -1050,9 +1054,8 @@ function ShopLedgerView({
   const generateExcel = () => {
     if (!shopInfo || ledgerEntries.length === 0) return
 
-    const routeName = Array.isArray(shopInfo.routes) ? shopInfo.routes[0]?.name : shopInfo.routes?.name
+    const routeName = shopInfo.routes?.name
 
-    // Info rows
     const infoRows: any[][] = [
       ['Shop Ledger Statement'],
       [`Generated: ${new Date().toLocaleString('en-IN')}`],
@@ -1073,10 +1076,8 @@ function ShopLedgerView({
       [],
     ]
 
-    // Header
     const header = ['Date', 'Type', 'Ref', 'Route', 'Batch/Products', 'Agent', 'Sale Amt', 'Paid', 'Balance', 'Mode', 'Status']
 
-    // Data rows
     const dataRows = ledgerEntries.map(entry => [
       new Date(entry.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
       entry.type === 'sale' ? 'Sale' : 'Payment',
@@ -1091,7 +1092,6 @@ function ShopLedgerView({
       entry.status,
     ])
 
-    // Totals row
     const totalsRow = ['', '', '', '', '', 'TOTALS',
       summary.totalSales, summary.totalPaid, summary.totalOutstanding, '', '']
 
@@ -1179,7 +1179,7 @@ function ShopLedgerView({
                   <div className="text-right text-sm space-y-0.5">
                     {shopInfo.routes && (
                       <p className="text-gray-600">Route: <span className="font-medium text-gray-800">
-                        {Array.isArray(shopInfo.routes) ? shopInfo.routes[0]?.name : shopInfo.routes?.name}
+                        {shopInfo.routes?.name}
                       </span></p>
                     )}
                     <p className="text-gray-600">Payment Terms: <span className="font-medium text-gray-800 capitalize">{shopInfo.payment_terms || 'Immediate'}</span></p>
@@ -1390,17 +1390,16 @@ function ShopLedgerView({
   )
 }
 
-// Agent Ledger View - Professional ERP-level agent financial ledger
-function AgentLedgerView({ 
-  agents, 
-  selectedAgent, 
-  onSelectAgent 
-}: { 
+// Agent Ledger View
+function AgentLedgerView({
+  agents,
+  selectedAgent,
+  onSelectAgent
+}: {
   agents: Agent[]
   selectedAgent: string | null
   onSelectAgent: (id: string | null) => void
 }) {
-  const supabase = createClient()
   const [agentInfo, setAgentInfo] = useState<any>(null)
   const [ledgerEntries, setLedgerEntries] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
@@ -1431,86 +1430,81 @@ function AgentLedgerView({
     setLoading(true)
     try {
       // 1. Agent info
-      const { data: agent } = await supabase
-        .from('app_users')
-        .select('id, name, email, phone, role, status, created_at')
-        .eq('id', agentId)
-        .single()
+      const agentSnap = await getDoc(doc(db, 'app_users', agentId))
+      const agent = agentSnap.exists() ? { id: agentSnap.id, ...agentSnap.data() } as any : null
       setAgentInfo(agent)
 
       // 2. Routes assigned to this agent
-      const { data: routes } = await supabase
-        .from('routes')
-        .select('id, name, area, is_active')
-        .eq('agent_id', agentId)
+      const routesSnap = await getDocs(query(collection(db, 'routes'), where('agent_id', '==', agentId)))
+      const routes = routesSnap.docs.map(d => ({ id: d.id, ...d.data() } as any))
       const routeMap: Record<string, string> = {}
-      for (const r of (routes || [])) routeMap[r.id] = r.name
-      const routeIds = (routes || []).map(r => r.id)
+      for (const r of routes) routeMap[r.id] = r.name
+      const routeIds = routes.map(r => r.id)
 
       // 3. Stock allocations
-      let allocQuery = supabase
-        .from('agent_stock_allocations')
-        .select('id, status, notes, created_at, approved_at, completed_at')
-        .eq('agent_id', agentId)
-        .order('created_at', { ascending: true })
-      if (dateFrom) allocQuery = allocQuery.gte('created_at', dateFrom)
-      if (dateTo) allocQuery = allocQuery.lte('created_at', dateTo + 'T23:59:59')
-      const { data: allocations } = await allocQuery
+      let allocSnap = await getDocs(query(collection(db, 'agent_stock_allocations'), where('agent_id', '==', agentId)))
+      let allocations = allocSnap.docs.map(d => ({ id: d.id, ...d.data() } as any))
+      if (dateFrom) allocations = allocations.filter(a => a.created_at >= dateFrom)
+      if (dateTo) allocations = allocations.filter(a => a.created_at <= dateTo + 'T23:59:59')
+      allocations.sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
 
-      // 4. Stock items for each allocation (with their IDs for delivery_sales linking)
-      const allocIds = (allocations || []).map(a => a.id)
-      let itemsByAlloc: Record<string, any[]> = {}
+      const allocIds = allocations.map(a => a.id)
+
+      // 4. Stock items for each allocation
+      const itemsByAlloc: Record<string, any[]> = {}
       let allStockItemIds: string[] = []
       if (allocIds.length > 0) {
-        const { data: items } = await supabase
-          .from('agent_stock_items')
-          .select('id, allocation_id, product_name, batch_number, quantity_allocated, quantity_sold, quantity_returned, unit')
-          .in('allocation_id', allocIds)
-        for (const item of (items || [])) {
-          if (!itemsByAlloc[item.allocation_id]) itemsByAlloc[item.allocation_id] = []
-          itemsByAlloc[item.allocation_id].push(item)
-          allStockItemIds.push(item.id)
+        for (let i = 0; i < allocIds.length; i += 10) {
+          const chunk = allocIds.slice(i, i + 10)
+          const q = query(collection(db, 'agent_stock_items'), where('allocation_id', 'in', chunk))
+          const snap = await getDocs(q)
+          snap.docs.forEach(d => {
+            const item = { id: d.id, ...d.data() } as any
+            if (!itemsByAlloc[item.allocation_id]) itemsByAlloc[item.allocation_id] = []
+            itemsByAlloc[item.allocation_id].push(item)
+            allStockItemIds.push(item.id)
+          })
         }
       }
 
-      // 5. Trace deliveries via: agent_stock_items -> delivery_sales -> deliveries
-      // This is the accurate chain (no date-range heuristic)
-      let salesByItemId: Record<string, any[]> = {}
-      let allDeliveryIds = new Set<string>()
+      // 5. Delivery sales via allocation items
+      const salesByItemId: Record<string, any[]> = {}
+      const allDeliveryIds = new Set<string>()
       if (allStockItemIds.length > 0) {
-        const { data: salesData } = await supabase
-          .from('delivery_sales')
-          .select('id, delivery_id, allocation_item_id, product_name, batch_number, quantity_sold, total_amount')
-          .in('allocation_item_id', allStockItemIds)
-        for (const sale of (salesData || [])) {
-          if (!salesByItemId[sale.allocation_item_id]) salesByItemId[sale.allocation_item_id] = []
-          salesByItemId[sale.allocation_item_id].push(sale)
-          if (sale.delivery_id) allDeliveryIds.add(sale.delivery_id)
+        for (let i = 0; i < allStockItemIds.length; i += 10) {
+          const chunk = allStockItemIds.slice(i, i + 10)
+          const q = query(collection(db, 'delivery_sales'), where('allocation_item_id', 'in', chunk))
+          const snap = await getDocs(q)
+          snap.docs.forEach(d => {
+            const sale = { id: d.id, ...d.data() } as any
+            if (!salesByItemId[sale.allocation_item_id]) salesByItemId[sale.allocation_item_id] = []
+            salesByItemId[sale.allocation_item_id].push(sale)
+            if (sale.delivery_id) allDeliveryIds.add(sale.delivery_id)
+          })
         }
       }
 
-      // Fetch full delivery records for all linked deliveries
-      let deliveryMap: Record<string, any> = {}
+      // Fetch deliveries
+      const deliveryMap: Record<string, any> = {}
       if (allDeliveryIds.size > 0) {
-        const { data: deliveries } = await supabase
-          .from('deliveries')
-          .select('id, route_id, shop_id, status, expected_amount, collected_amount, delivered_at, created_at, shops(name)')
-          .in('id', Array.from(allDeliveryIds))
-        for (const d of (deliveries || [])) {
-          deliveryMap[d.id] = d
+        const deliveryIdsArr = Array.from(allDeliveryIds)
+        for (let i = 0; i < deliveryIdsArr.length; i += 10) {
+          const chunk = deliveryIdsArr.slice(i, i + 10)
+          const q = query(collection(db, 'deliveries'), where('__name__', 'in', chunk))
+          const snap = await getDocs(q)
+          snap.docs.forEach(d => { deliveryMap[d.id] = { id: d.id, ...d.data() } })
         }
       }
 
-      // Build item->allocation mapping for quick lookup
-      let itemToAlloc: Record<string, string> = {}
+      // Map items to alloc
+      const itemToAlloc: Record<string, string> = {}
       for (const allocId of Object.keys(itemsByAlloc)) {
         for (const item of itemsByAlloc[allocId]) {
           itemToAlloc[item.id] = allocId
         }
       }
 
-      // Map delivery_ids to allocation_ids via delivery_sales -> allocation_item_id -> allocation_id
-      let deliveriesByAlloc: Record<string, Set<string>> = {}
+      const deliveriesByAlloc: Record<string, Set<string>> = {}
       for (const itemId of Object.keys(salesByItemId)) {
         const allocId = itemToAlloc[itemId]
         if (!allocId) continue
@@ -1520,11 +1514,11 @@ function AgentLedgerView({
         }
       }
 
-      // 6. Build ledger entries per allocation/dispatch
+      // 6. Build ledger entries per allocation
       const entries: any[] = []
       let grandTotalAllocated = 0, grandTotalSold = 0, grandTotalReturned = 0
 
-      for (const alloc of (allocations || [])) {
+      for (const alloc of allocations) {
         const items = itemsByAlloc[alloc.id] || []
         const stockAllocated = items.reduce((s: number, i: any) => s + parseFloat(String(i.quantity_allocated || 0)), 0)
         const stockSold = items.reduce((s: number, i: any) => s + parseFloat(String(i.quantity_sold || 0)), 0)
@@ -1535,7 +1529,6 @@ function AgentLedgerView({
         grandTotalSold += stockSold
         grandTotalReturned += stockReturned
 
-        // Get deliveries linked to this allocation via delivery_sales chain
         const linkedDeliveryIds = deliveriesByAlloc[alloc.id] || new Set()
         const allocDeliveries = Array.from(linkedDeliveryIds).map(did => deliveryMap[did]).filter(Boolean)
 
@@ -1562,24 +1555,22 @@ function AgentLedgerView({
         })
       }
 
-      // Sort by date descending
       entries.reverse()
       setLedgerEntries(entries)
 
-      // Calculate overall summary from all linked deliveries
       const allDeliveries = Object.values(deliveryMap)
       const totalSales = allDeliveries.reduce((s, d) => s + parseFloat(String(d.expected_amount || 0)), 0)
       const totalCash = allDeliveries.reduce((s, d) => s + parseFloat(String(d.collected_amount || 0)), 0)
 
       setSummary({
-        totalDispatches: (allocations || []).length,
+        totalDispatches: allocations.length,
         totalSales,
         totalCashCollected: totalCash,
         totalOutstanding: Math.max(0, totalSales - totalCash),
         totalStockAllocated: grandTotalAllocated,
         totalStockSold: grandTotalSold,
         totalStockReturned: grandTotalReturned,
-        activeRoutes: (routes || []).filter(r => r.is_active).length,
+        activeRoutes: routes.filter(r => r.is_active).length,
       })
     } catch (err) {
       console.error('Error fetching agent ledger:', err)
@@ -1996,179 +1987,6 @@ function AgentLedgerView({
           </div>
         </>
       )}
-    </div>
-  )
-}
-
-// Add Payment View Component
-function AddPaymentView({ 
-  shops, 
-  agents, 
-  onSuccess 
-}: { 
-  shops: Shop[]
-  agents: Agent[]
-  onSuccess: () => void
-}) {
-  const supabase = createClient()
-  const [formData, setFormData] = useState({
-    shop_id: '',
-    agent_id: '',
-    amount: '',
-    mode: 'cash',
-    reference: '',
-    notes: '',
-  })
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState('')
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError('')
-
-    if (!formData.shop_id || !formData.amount || parseFloat(formData.amount) <= 0) {
-      setError('Please select a shop and enter a valid amount')
-      return
-    }
-
-    setSubmitting(true)
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      let adminId = null
-      if (user) {
-        const { data: appUser } = await supabase
-          .from('app_users')
-          .select('id')
-          .eq('auth_uid', user.id)
-          .single()
-        adminId = appUser?.id
-      }
-
-      const shopData = shops.find(s => s.id === formData.shop_id)
-
-      const { error: insertError } = await supabase
-        .from('ledger_entries')
-        .insert({
-          from_account: shopData?.name || 'Unknown Shop',
-          to_account: 'company_cash',
-          amount: parseFloat(formData.amount),
-          mode: formData.mode,
-          reference: formData.reference || null,
-          cleared: false,
-          created_by: adminId,
-        })
-
-      if (insertError) throw insertError
-
-      alert('Payment recorded successfully!')
-      onSuccess()
-    } catch (err: any) {
-      setError(err.message || 'Failed to record payment')
-    }
-    setSubmitting(false)
-  }
-
-  return (
-    <div className="bg-white rounded-lg shadow p-6 max-w-2xl">
-      <h3 className="text-lg font-semibold text-gray-900 mb-4">➕ Add New Payment</h3>
-      
-      {error && (
-        <div className="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
-          {error}
-        </div>
-      )}
-
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Shop Name *</label>
-          <select
-            value={formData.shop_id}
-            onChange={(e) => setFormData({ ...formData, shop_id: e.target.value })}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
-            required
-          >
-            <option value="">Select shop...</option>
-            {shops.map(shop => (
-              <option key={shop.id} value={shop.id}>{shop.name}</option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Agent (Optional)</label>
-          <select
-            value={formData.agent_id}
-            onChange={(e) => setFormData({ ...formData, agent_id: e.target.value })}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
-          >
-            <option value="">Select agent...</option>
-            {agents.map(agent => (
-              <option key={agent.id} value={agent.id}>{agent.name}</option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Amount Received *</label>
-          <input
-            type="number"
-            step="0.01"
-            min="0.01"
-            value={formData.amount}
-            onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
-            placeholder="0.00"
-            required
-          />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Payment Mode *</label>
-          <select
-            value={formData.mode}
-            onChange={(e) => setFormData({ ...formData, mode: e.target.value })}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
-            required
-          >
-            <option value="cash">Cash (Offline)</option>
-            <option value="upi">UPI</option>
-            <option value="bank_transfer">Bank Transfer</option>
-            <option value="adjustment">Adjustment</option>
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Reference Number (Optional)</label>
-          <input
-            type="text"
-            value={formData.reference}
-            onChange={(e) => setFormData({ ...formData, reference: e.target.value })}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
-            placeholder="Transaction ID, check number, etc."
-          />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Notes (Optional)</label>
-          <textarea
-            value={formData.notes}
-            onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
-            rows={3}
-            placeholder="Additional information..."
-          />
-        </div>
-
-        <div className="flex gap-3 pt-4">
-          <button
-            type="submit"
-            disabled={submitting}
-            className="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg font-medium transition-colors disabled:opacity-50"
-          >
-            {submitting ? 'Recording...' : 'Record Payment'}
-          </button>
-        </div>
-      </form>
     </div>
   )
 }

@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, limit, doc, deleteDoc, getCountFromServer } from 'firebase/firestore'
 
 export default function RoutesPage() {
-  const supabase = createClient()
   const [routes, setRoutes] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [deleting, setDeleting] = useState<string | null>(null)
@@ -13,40 +13,62 @@ export default function RoutesPage() {
   useEffect(() => {
     const fetchRoutes = async () => {
       setLoading(true)
-      // Fetch permanent routes (not date-based)
-      // Use explicit foreign key names to avoid ambiguity
-      const { data, error } = await supabase
-        .from('routes')
-        .select(`
-          *, 
-          agent:app_users!routes_agent_id_fkey(name, email),
-          created_by_user:app_users!routes_created_by_fkey(name, email)
-        `)
-        .eq('is_active', true)
-        .order('created_at', { ascending: false })
-        .limit(50)
-      
-      if (!error && data) {
-        // For each route, get shop count from shops table
-        const routesWithCounts = await Promise.all(
-          data.map(async (route) => {
-            const { count } = await supabase
-              .from('shops')
-              .select('*', { count: 'exact', head: true })
-              .eq('route_id', route.id)
-            
-            return {
-              ...route,
-              shopCount: count || 0,
+      const q = query(
+        collection(db, 'routes'),
+        where('is_active', '==', true),
+        limit(50)
+      )
+      const snap = await getDocs(q)
+      const data = snap.docs.map(d => ({ id: d.id, ...d.data() })) as any[]
+      data.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+
+      // For each route, fetch agent, created_by_user, and shop count
+      const routesWithDetails = await Promise.all(
+        data.map(async (route) => {
+          // Fetch agent
+          if (route.agent_id) {
+            try {
+              const agentQ = query(collection(db, 'app_users'), where('__name__', '==', route.agent_id))
+              const agentSnap = await getDocs(agentQ)
+              route.agent = agentSnap.empty ? null : { id: agentSnap.docs[0].id, ...agentSnap.docs[0].data() }
+            } catch {
+              route.agent = null
             }
-          })
-        )
-        setRoutes(routesWithCounts)
-      }
+          } else {
+            route.agent = null
+          }
+
+          // Fetch created_by_user
+          if (route.created_by) {
+            try {
+              const userQ = query(collection(db, 'app_users'), where('__name__', '==', route.created_by))
+              const userSnap = await getDocs(userQ)
+              route.created_by_user = userSnap.empty ? null : { id: userSnap.docs[0].id, ...userSnap.docs[0].data() }
+            } catch {
+              route.created_by_user = null
+            }
+          } else {
+            route.created_by_user = null
+          }
+
+          // Get shop count
+          try {
+            const shopCountQ = query(collection(db, 'shops'), where('route_id', '==', route.id))
+            const countSnap = await getCountFromServer(shopCountQ)
+            route.shopCount = countSnap.data().count
+          } catch {
+            route.shopCount = 0
+          }
+
+          return route
+        })
+      )
+
+      setRoutes(routesWithDetails)
       setLoading(false)
     }
     fetchRoutes()
-  }, [supabase])
+  }, [])
 
   const handleDelete = async (routeId: string, routeName: string) => {
     if (!confirm(`Are you sure you want to delete route "${routeName}"? This will also remove all shop assignments for this route.`)) {
@@ -55,14 +77,7 @@ export default function RoutesPage() {
 
     setDeleting(routeId)
     try {
-      const { error } = await supabase
-        .from('routes')
-        .delete()
-        .eq('id', routeId)
-
-      if (error) throw error
-
-      // Remove from local state
+      await deleteDoc(doc(db, 'routes', routeId))
       setRoutes(routes.filter(r => r.id !== routeId))
       alert('Route deleted successfully')
     } catch (error: any) {

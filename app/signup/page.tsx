@@ -1,7 +1,9 @@
 'use client'
 
-import { useState, useMemo } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { useState } from 'react'
+import { auth, db } from '@/lib/firebase/client'
+import { createUserWithEmailAndPassword, signOut, deleteUser } from 'firebase/auth'
+import { collection, addDoc } from 'firebase/firestore'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 
@@ -14,40 +16,19 @@ export default function SignupPage() {
     phone: '',
     secretCode: '',
   })
-  
-  const SIGNUP_SECRET = 'DAIRY2026' // Change this to your desired secret code
+  const SIGNUP_SECRET = process.env.NEXT_PUBLIC_SIGNUP_SECRET
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [clientReady, setClientReady] = useState(false)
   const router = useRouter()
-  
-  // Create client only once and handle initialization errors
-  const supabase = useMemo(() => {
-    try {
-      const client = createClient()
-      setClientReady(true)
-      return client
-    } catch (err) {
-      console.error('Failed to create Supabase client:', err)
-      setError('Failed to initialize authentication. Please check your internet connection.')
-      return null
-    }
-  }, [])
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault()
-    
-    // Check if client is ready
-    if (!supabase || !clientReady) {
-      setError('Authentication service is not ready. Please refresh the page.')
-      return
-    }
-    
+
     if (formData.secretCode !== SIGNUP_SECRET) {
       setError('Invalid secret code')
       return
     }
-    
+
     if (formData.password !== formData.confirmPassword) {
       setError('Passwords do not match')
       return
@@ -62,44 +43,34 @@ export default function SignupPage() {
     setError(null)
 
     try {
-      // Create auth user
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: formData.email,
-        password: formData.password,
-      })
+      const { user } = await createUserWithEmailAndPassword(auth, formData.email, formData.password)
 
-      if (authError) throw authError
-
-      if (authData.user) {
-        // Create app_users entry with pending status
-        const { error: dbError } = await supabase
-          .from('app_users')
-          .insert({
-            auth_uid: authData.user.id,
-            email: formData.email,
-            name: formData.name,
-            phone: formData.phone,
-            role: 'admin', // Admin role
-            status: 'pending', // Pending approval
-          })
-
-        if (dbError) {
-          console.error('Failed to create app_users entry:', dbError)
-          // Clean up auth user if app_users insert fails
-          await supabase.auth.admin.deleteUser(authData.user.id).catch(() => {})
-          throw new Error(`Failed to create user profile: ${dbError.message}`)
-        }
-
-        // Sign out immediately - no auto-login for pending accounts
-        await supabase.auth.signOut()
-
-        // Redirect to login with pending message
-        router.push('/login?message=pending')
-        router.refresh()
+      try {
+        await addDoc(collection(db, 'app_users'), {
+          auth_uid: user.uid,
+          email: formData.email,
+          name: formData.name,
+          phone: formData.phone,
+          role: 'admin',
+          status: 'active',
+          created_at: new Date().toISOString(),
+        })
+      } catch (dbError: any) {
+        // Clean up auth user if Firestore insert fails
+        await deleteUser(user).catch(() => {})
+        throw new Error(`Failed to create user profile: ${dbError.message}`)
       }
+
+      // Sign out so the user goes through the normal login flow
+      await signOut(auth)
+
+      router.push('/login?signup=success')
+      router.refresh()
     } catch (err: any) {
       console.error('Signup error:', err)
-      if (err.message?.includes('fetch')) {
+      if (err.code === 'auth/email-already-in-use') {
+        setError('An account with this email already exists.')
+      } else if (err.message?.includes('fetch') || err.message?.includes('network')) {
         setError('Network error. Please check your internet connection and try again.')
       } else {
         setError(err.message || 'Failed to sign up')
@@ -118,11 +89,6 @@ export default function SignupPage() {
         </div>
 
         <form onSubmit={handleSignup} className="space-y-4">
-          {!clientReady && (
-            <div className="bg-yellow-50 border border-yellow-200 text-yellow-700 px-4 py-3 rounded-lg text-sm">
-              Connecting to authentication service...
-            </div>
-          )}
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
               {error}
@@ -222,10 +188,10 @@ export default function SignupPage() {
 
           <button
             type="submit"
-            disabled={loading || !clientReady}
+            disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? 'Creating Account...' : !clientReady ? 'Connecting...' : 'Sign Up'}
+            {loading ? 'Creating Account...' : 'Sign Up'}
           </button>
         </form>
 

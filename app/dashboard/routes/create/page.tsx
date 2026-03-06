@@ -2,12 +2,12 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { db, auth } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, orderBy, doc, addDoc, updateDoc } from 'firebase/firestore'
 
 export default function CreateRoutePage() {
   const router = useRouter()
-  const supabase = createClient()
-  
+
   const [agents, setAgents] = useState<any[]>([])
   const [shops, setShops] = useState<any[]>([])
   const [products, setProducts] = useState<any[]>([])
@@ -23,24 +23,24 @@ export default function CreateRoutePage() {
 
   useEffect(() => {
     const fetchData = async () => {
-      const [agentsRes, shopsRes, productsRes] = await Promise.all([
-        supabase.from('app_users').select('id, name, email').eq('role', 'delivery_agent').eq('status', 'active').order('name'),
-        supabase.from('shops').select('id, name, address, city, contact, owner_name, shop_type, payment_terms, route_id, status').is('route_id', null).eq('status', 'approved').order('name'),
-        supabase.from('products').select('id, name, sku, uom').order('name'),
+      const [agentsSnap, shopsSnap, productsSnap] = await Promise.all([
+        getDocs(query(collection(db, 'app_users'), where('role', '==', 'delivery_agent'), where('status', '==', 'active'), orderBy('name'))),
+        getDocs(query(collection(db, 'shops'), where('route_id', '==', null), where('status', '==', 'approved'), orderBy('name'))),
+        getDocs(query(collection(db, 'products'), orderBy('name'))),
       ])
-      setAgents(agentsRes.data || [])
-      setShops(shopsRes.data || [])
-      setProducts(productsRes.data || [])
+      setAgents(agentsSnap.docs.map(d => ({ id: d.id, ...d.data() })))
+      setShops(shopsSnap.docs.map(d => ({ id: d.id, ...d.data() })))
+      setProducts(productsSnap.docs.map(d => ({ id: d.id, ...d.data() })))
     }
     fetchData()
-  }, [supabase])
+  }, [])
 
   const addShop = (shop: any) => {
     if (!selectedShops.find(s => s.id === shop.id)) {
       // Add shop with empty product selections
-      setSelectedShops([...selectedShops, { 
-        ...shop, 
-        seq: selectedShops.length + 1, 
+      setSelectedShops([...selectedShops, {
+        ...shop,
+        seq: selectedShops.length + 1,
         status: 'pending',
         products: [{ product_id: '', product_name: '', qty: '' }]
       }])
@@ -58,10 +58,10 @@ export default function CreateRoutePage() {
       const updatedProducts = [...s.products]
       if (field === 'product_id') {
         const product = products.find(p => p.id === value)
-        updatedProducts[productIndex] = { 
-          ...updatedProducts[productIndex], 
-          product_id: value, 
-          product_name: product?.name || '' 
+        updatedProducts[productIndex] = {
+          ...updatedProducts[productIndex],
+          product_id: value,
+          product_name: product?.name || ''
         }
       } else {
         updatedProducts[productIndex] = { ...updatedProducts[productIndex], [field]: value }
@@ -103,32 +103,27 @@ export default function CreateRoutePage() {
     setError(null)
 
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      const { data: appUser } = await supabase
-        .from('app_users')
-        .select('id')
-        .eq('auth_uid', user?.id)
-        .single()
+      const user = auth.currentUser
+      let appUserId = null
+      if (user) {
+        const appUserSnap = await getDocs(query(collection(db, 'app_users'), where('auth_uid', '==', user.uid)))
+        if (!appUserSnap.empty) appUserId = appUserSnap.docs[0].id
+      }
 
       // Create route first
-      const { data: newRoute, error: routeError } = await supabase
-        .from('routes')
-        .insert({
-          name: formData.name,
-          agent_id: formData.agent_id || null,
-          area: formData.name,
-          is_active: true,
-          created_by: appUser?.id,
-        })
-        .select()
-        .single()
-
-      if (routeError) throw routeError
+      const newRouteRef = await addDoc(collection(db, 'routes'), {
+        name: formData.name,
+        agent_id: formData.agent_id || null,
+        area: formData.name,
+        is_active: true,
+        created_by: appUserId,
+        created_at: new Date().toISOString(),
+      })
 
       // Assign shops to the route
       const shopUpdates = selectedShops.map((shop, index) => ({
         id: shop.id,
-        route_id: newRoute.id,
+        route_id: newRouteRef.id,
         sequence: index + 1,
         expected_products: shop.products
           .filter((p: any) => p.product_id)
@@ -141,14 +136,9 @@ export default function CreateRoutePage() {
 
       // Update each shop with route assignment
       for (const update of shopUpdates) {
-        const { error: updateError } = await supabase
-          .from('shops')
-          .update({
-            route_id: update.route_id,
-          })
-          .eq('id', update.id)
-
-        if (updateError) throw updateError
+        await updateDoc(doc(db, 'shops', update.id), {
+          route_id: update.route_id,
+        })
       }
 
       router.push('/dashboard/routes')
@@ -160,7 +150,7 @@ export default function CreateRoutePage() {
     }
   }
 
-  const filteredShops = shops.filter(shop => 
+  const filteredShops = shops.filter(shop =>
     shop.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     shop.city?.toLowerCase().includes(searchTerm.toLowerCase())
   )
@@ -221,7 +211,7 @@ export default function CreateRoutePage() {
             <label className="block text-sm font-medium text-gray-700 mb-3">
               Add Shops to Route ({selectedShops.length} selected)
             </label>
-            
+
             <div className="mb-4">
               <input
                 type="text"
@@ -231,7 +221,7 @@ export default function CreateRoutePage() {
                 placeholder="Search shops by name or city..."
               />
             </div>
-              
+
             {/* Available Shops List - Always visible */}
             <div className="mb-4">
               <div className="text-sm font-medium text-gray-700 mb-2">Available Shops ({filteredShops.length})</div>
@@ -313,7 +303,7 @@ export default function CreateRoutePage() {
                         </div>
                       </div>
                     </div>
-                    
+
                     {/* Products for this shop */}
                     <div className="p-4">
                       <div className="text-sm font-medium text-gray-700 mb-2">Expected Products</div>

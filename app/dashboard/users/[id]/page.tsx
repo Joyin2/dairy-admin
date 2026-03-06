@@ -1,14 +1,14 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { doc, updateDoc, deleteDoc, getDoc } from 'firebase/firestore'
 import { useRouter, useParams } from 'next/navigation'
 
 export default function EditUserPage() {
   const router = useRouter()
   const params = useParams()
-  const supabase = createClient()
-  
+
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -25,15 +25,12 @@ export default function EditUserPage() {
 
   useEffect(() => {
     const fetchUser = async () => {
-      const { data, error } = await supabase
-        .from('app_users')
-        .select('*')
-        .eq('id', params.id)
-        .single()
+      const userSnap = await getDoc(doc(db, 'app_users', params.id as string))
 
-      if (error) {
+      if (!userSnap.exists()) {
         setError('User not found')
-      } else if (data) {
+      } else {
+        const data = { id: userSnap.id, ...userSnap.data() } as any
         setFormData({
           name: data.name || '',
           email: data.email || '',
@@ -47,7 +44,7 @@ export default function EditUserPage() {
     }
 
     fetchUser()
-  }, [params.id, supabase])
+  }, [params.id])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -55,17 +52,21 @@ export default function EditUserPage() {
     setError(null)
 
     try {
-      const { error: updateError } = await supabase
-        .from('app_users')
-        .update({
-          name: formData.name,
-          phone: formData.phone,
-          role: formData.role,
-          status: formData.status,
-        })
-        .eq('id', params.id)
+      await updateDoc(doc(db, 'app_users', params.id as string), {
+        name: formData.name,
+        phone: formData.phone,
+        role: formData.role,
+        status: formData.status,
+      })
 
-      if (updateError) throw updateError
+      // Sync custom claims so Firestore rules reflect the new role immediately
+      if (authUid) {
+        await fetch('/api/set-user-claims', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ authUid, role: formData.role, status: formData.status }),
+        })
+      }
 
       router.push('/dashboard/users')
       router.refresh()
@@ -91,7 +92,6 @@ export default function EditUserPage() {
     setError(null)
 
     try {
-      // Call Supabase Edge Function or use admin API to reset password
       const response = await fetch('/api/reset-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -117,12 +117,7 @@ export default function EditUserPage() {
 
     setLoading(true)
     try {
-      const { error: deleteError } = await supabase
-        .from('app_users')
-        .delete()
-        .eq('id', params.id)
-
-      if (deleteError) throw deleteError
+      await deleteDoc(doc(db, 'app_users', params.id as string))
 
       router.push('/dashboard/users')
       router.refresh()
@@ -254,7 +249,7 @@ export default function EditUserPage() {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">Reset Password</h3>
-            
+
             {error && (
               <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4 text-sm">
                 {error}

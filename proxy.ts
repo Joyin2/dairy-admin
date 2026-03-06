@@ -1,8 +1,7 @@
 import { type NextRequest, NextResponse } from 'next/server'
-import { updateSession } from './lib/supabase/middleware'
+import { updateSession } from './lib/firebase/middleware'
 
-export async function middleware(request: NextRequest) {
-  // Skip middleware for static files and api routes to avoid unnecessary processing
+export async function proxy(request: NextRequest) {
   if (
     request.nextUrl.pathname.startsWith('/_next') ||
     request.nextUrl.pathname.startsWith('/api') ||

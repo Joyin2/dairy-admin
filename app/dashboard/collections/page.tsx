@@ -1,13 +1,23 @@
 'use client'
 
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import {
+  collection,
+  query,
+  where,
+  getDocs,
+  orderBy,
+  limit,
+  doc,
+  deleteDoc,
+  updateDoc,
+} from 'firebase/firestore'
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 export default function CollectionsPage() {
   const router = useRouter()
-  const supabase = createClient()
   const [collections, setCollections] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [deleting, setDeleting] = useState<string | null>(null)
@@ -17,30 +27,57 @@ export default function CollectionsPage() {
   }, [])
 
   const loadCollections = async () => {
-    const { data } = await supabase
-      .from('milk_collections')
-      .select('*, suppliers(name), app_users(name)')
-      .order('created_at', { ascending: false })
-      .limit(50)
-    setCollections(data || [])
+    const q = query(
+      collection(db, 'milk_collections'),
+      orderBy('created_at', 'desc'),
+      limit(50)
+    )
+    const snap = await getDocs(q)
+
+    const data = await Promise.all(
+      snap.docs.map(async (d) => {
+        const item: any = { id: d.id, ...d.data() }
+
+        if (item.supplier_id) {
+          const supplierSnap = await getDocs(
+            query(collection(db, 'suppliers'), where('__name__', '==', item.supplier_id), limit(1))
+          )
+          if (!supplierSnap.empty) {
+            item.suppliers = supplierSnap.docs[0].data()
+          }
+        }
+
+        if (item.operator_user_id) {
+          const userSnap = await getDocs(
+            query(collection(db, 'app_users'), where('__name__', '==', item.operator_user_id), limit(1))
+          )
+          if (!userSnap.empty) {
+            item.app_users = userSnap.docs[0].data()
+          }
+        }
+
+        return item
+      })
+    )
+
+    setCollections(data)
     setLoading(false)
   }
 
   const handleDelete = async (id: string) => {
     if (!confirm('Are you sure you want to delete this collection?')) return
-    
+
     setDeleting(id)
     try {
       // First delete from pool_collections if it references this collection
-      await supabase
-        .from('pool_collections')
-        .delete()
-        .eq('collection_id', id)
-      
+      const poolSnap = await getDocs(
+        query(collection(db, 'pool_collections'), where('collection_id', '==', id))
+      )
+      await Promise.all(poolSnap.docs.map((d) => deleteDoc(doc(db, 'pool_collections', d.id))))
+
       // Then delete the collection
-      const { error } = await supabase.from('milk_collections').delete().eq('id', id)
-      if (error) throw error
-      setCollections(collections.filter(c => c.id !== id))
+      await deleteDoc(doc(db, 'milk_collections', id))
+      setCollections(collections.filter((c) => c.id !== id))
     } catch (err: any) {
       alert('Failed to delete: ' + err.message)
     } finally {
@@ -49,23 +86,21 @@ export default function CollectionsPage() {
   }
 
   const handleApprove = async (id: string) => {
-    const { error } = await supabase
-      .from('milk_collections')
-      .update({ qc_status: 'approved' })
-      .eq('id', id)
-    if (!error) {
-      setCollections(collections.map(c => c.id === id ? { ...c, qc_status: 'approved' } : c))
+    try {
+      await updateDoc(doc(db, 'milk_collections', id), { qc_status: 'approved' })
+      setCollections(collections.map((c) => (c.id === id ? { ...c, qc_status: 'approved' } : c)))
+    } catch (err: any) {
+      alert('Failed to approve: ' + err.message)
     }
   }
 
   const handleReject = async (id: string) => {
     if (!confirm('Reject this collection?')) return
-    const { error } = await supabase
-      .from('milk_collections')
-      .update({ qc_status: 'rejected' })
-      .eq('id', id)
-    if (!error) {
-      setCollections(collections.map(c => c.id === id ? { ...c, qc_status: 'rejected' } : c))
+    try {
+      await updateDoc(doc(db, 'milk_collections', id), { qc_status: 'rejected' })
+      setCollections(collections.map((c) => (c.id === id ? { ...c, qc_status: 'rejected' } : c)))
+    } catch (err: any) {
+      alert('Failed to reject: ' + err.message)
     }
   }
 

@@ -1,33 +1,26 @@
 import { NextResponse } from 'next/server'
+import { adminDb } from '@/lib/firebase/admin'
 
 export async function GET() {
   try {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-    const hasAnonKey = !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-
-    // Test basic connectivity to Supabase
-    const response = await fetch(`${supabaseUrl}/rest/v1/`, {
-      method: 'HEAD',
-      headers: {
-        'apikey': process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-      },
-    })
+    await adminDb.collection('_health').limit(1).get()
 
     return NextResponse.json({
       status: 'ok',
-      supabase: {
-        url: supabaseUrl,
-        hasAnonKey,
-        reachable: response.ok,
-        statusCode: response.status,
+      firebase: {
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        reachable: true,
       },
       timestamp: new Date().toISOString(),
     })
   } catch (error: any) {
-    return NextResponse.json({
-      status: 'error',
-      error: error.message,
-      timestamp: new Date().toISOString(),
-    }, { status: 500 })
+    return NextResponse.json(
+      {
+        status: 'error',
+        error: error.message,
+        timestamp: new Date().toISOString(),
+      },
+      { status: 500 }
+    )
   }
 }

@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { createClient } from '@/lib/supabase/client'
+import { db, auth } from '@/lib/firebase/client'
+import { collection, query, where, getDocs } from 'firebase/firestore'
 
 interface Agent {
   id: string
@@ -10,7 +11,6 @@ interface Agent {
 }
 
 export default function OutstandingBalancesPage() {
-  const supabase = createClient()
   const [balances, setBalances] = useState<any[]>([])
   const [filteredBalances, setFilteredBalances] = useState<any[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
@@ -22,27 +22,6 @@ export default function OutstandingBalancesPage() {
   useEffect(() => {
     fetchAgents()
     fetchOutstandingBalances()
-
-    // Set up real-time subscription for delivery updates
-    const channel = supabase
-      .channel('outstanding-deliveries')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'deliveries',
-        },
-        () => {
-          // Refetch when any delivery is updated
-          fetchOutstandingBalances()
-        }
-      )
-      .subscribe()
-
-    return () => {
-      supabase.removeChannel(channel)
-    }
   }, [])
 
   // Apply filter when agentFilter or balances change
@@ -58,36 +37,69 @@ export default function OutstandingBalancesPage() {
   }, [agentFilter, balances, totalOutstanding])
 
   const fetchAgents = async () => {
-    const { data } = await supabase
-      .from('app_users')
-      .select('id, name')
-      .eq('role', 'delivery_agent')
-      .eq('status', 'active')
-      .order('name')
-    setAgents(data || [])
+    const q = query(
+      collection(db, 'app_users'),
+      where('role', '==', 'delivery_agent'),
+      where('status', '==', 'active')
+    )
+    const snap = await getDocs(q)
+    const data = snap.docs.map(d => ({ id: d.id, ...d.data() } as any))
+    data.sort((a: any, b: any) => a.name.localeCompare(b.name))
+    setAgents(data)
   }
 
   const fetchOutstandingBalances = async () => {
     setLoading(true)
-    
-    // Get all deliveries with status delivered or partial, including shop and route info
-    const { data: deliveries } = await supabase
-      .from('deliveries')
-      .select('*, shops(id, name, contact, city, owner_name, route_id)')
-      .in('status', ['delivered', 'partial'])
 
-    if (deliveries) {
-      // Fetch routes to get agent info for shops
-      const routeIds = [...new Set(deliveries.map((d: any) => d.shops?.route_id).filter(Boolean))]
-      const { data: routes } = await supabase
-        .from('routes')
-        .select('id, name, agent_id, agent:app_users!routes_agent_id_fkey(name)')
-        .in('id', routeIds.length > 0 ? routeIds : [''])
+    // Get all deliveries with status delivered or partial
+    const deliveriesQ = query(
+      collection(db, 'deliveries'),
+      where('status', 'in', ['delivered', 'partial'])
+    )
+    const deliveriesSnap = await getDocs(deliveriesQ)
+    const deliveries = deliveriesSnap.docs.map(d => ({ id: d.id, ...d.data() } as any))
 
-      const routeMap = (routes || []).reduce((acc: any, r: any) => {
-        acc[r.id] = r
-        return acc
-      }, {})
+    if (deliveries.length > 0) {
+      // Collect unique shop IDs and route IDs
+      const shopIds = [...new Set(deliveries.map((d: any) => d.shop_id).filter(Boolean))]
+      const routeIds = [...new Set(deliveries.map((d: any) => d.route_id).filter(Boolean))]
+
+      // Fetch shops
+      const shopMap: Record<string, any> = {}
+      if (shopIds.length > 0) {
+        const chunks = []
+        for (let i = 0; i < shopIds.length; i += 10) chunks.push(shopIds.slice(i, i + 10))
+        for (const chunk of chunks) {
+          const q = query(collection(db, 'shops'), where('__name__', 'in', chunk))
+          const snap = await getDocs(q)
+          snap.docs.forEach(d => { shopMap[d.id] = { id: d.id, ...d.data() } })
+        }
+      }
+
+      // Fetch routes
+      const routeMap: Record<string, any> = {}
+      if (routeIds.length > 0) {
+        const chunks = []
+        for (let i = 0; i < routeIds.length; i += 10) chunks.push(routeIds.slice(i, i + 10))
+        for (const chunk of chunks) {
+          const q = query(collection(db, 'routes'), where('__name__', 'in', chunk))
+          const snap = await getDocs(q)
+          snap.docs.forEach(d => { routeMap[d.id] = { id: d.id, ...d.data() } })
+        }
+      }
+
+      // Fetch agents for routes
+      const agentIds = [...new Set(Object.values(routeMap).map((r: any) => r.agent_id).filter(Boolean))]
+      const agentNameMap: Record<string, string> = {}
+      if (agentIds.length > 0) {
+        const chunks = []
+        for (let i = 0; i < agentIds.length; i += 10) chunks.push(agentIds.slice(i, i + 10))
+        for (const chunk of chunks) {
+          const q = query(collection(db, 'app_users'), where('__name__', 'in', chunk))
+          const snap = await getDocs(q)
+          snap.docs.forEach(d => { agentNameMap[d.id] = (d.data() as any).name })
+        }
+      }
 
       // Group by shop and calculate balance
       const shopBalances = deliveries.reduce((acc: any, delivery: any) => {
@@ -97,20 +109,21 @@ export default function OutstandingBalancesPage() {
         const balance = expected - collected
 
         if (balance > 0) {
-          const routeId = delivery.shops?.route_id
+          const shop = shopMap[shopId]
+          const routeId = delivery.route_id
           const routeInfo = routeId ? routeMap[routeId] : null
-          
+
           if (!acc[shopId]) {
             acc[shopId] = {
               shop_id: shopId,
-              shop_name: delivery.shops?.name || 'Unknown',
-              owner_name: delivery.shops?.owner_name || '',
-              contact: delivery.shops?.contact || '',
-              city: delivery.shops?.city || '',
+              shop_name: shop?.name || 'Unknown',
+              owner_name: shop?.owner_name || '',
+              contact: shop?.contact || '',
+              city: shop?.city || '',
               route_id: routeId,
               route_name: routeInfo?.name || 'Unassigned',
               agent_id: routeInfo?.agent_id || null,
-              agent_name: routeInfo?.agent?.name || 'Unassigned',
+              agent_name: routeInfo?.agent_id ? (agentNameMap[routeInfo.agent_id] || 'Unassigned') : 'Unassigned',
               total_expected: 0,
               total_collected: 0,
               outstanding: 0,
@@ -127,11 +140,11 @@ export default function OutstandingBalancesPage() {
 
       const balanceArray = Object.values(shopBalances).sort((a: any, b: any) => b.outstanding - a.outstanding)
       setBalances(balanceArray)
-      
+
       const total = balanceArray.reduce((sum: number, b: any) => sum + b.outstanding, 0)
       setTotalOutstanding(total)
     }
-    
+
     setLoading(false)
   }
 

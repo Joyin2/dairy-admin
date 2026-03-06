@@ -1,13 +1,29 @@
-import { createClient } from '@/lib/supabase/server'
+'use client'
+
+import { db } from '@/lib/firebase/client'
+import { collection, getDocs } from 'firebase/firestore'
 import Link from 'next/link'
+import { useEffect, useState } from 'react'
 
-export default async function UsersPage() {
-  const supabase = await createClient()
+export default function UsersPage() {
+  const [users, setUsers] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
 
-  const { data: users } = await supabase
-    .from('app_users')
-    .select('*')
-    .order('created_at', { ascending: false })
+  useEffect(() => {
+    loadUsers()
+  }, [])
+
+  const loadUsers = async () => {
+    const snap = await getDocs(collection(db, 'app_users'))
+    const all = snap.docs.map((d) => ({ id: d.id, ...d.data() } as any))
+    all.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+    setUsers(all)
+    setLoading(false)
+  }
+
+  if (loading) {
+    return <div className="text-center py-12">Loading...</div>
+  }
 
   return (
     <div className="space-y-6">

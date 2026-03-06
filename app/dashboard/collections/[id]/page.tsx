@@ -1,42 +1,59 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { doc, getDoc, updateDoc } from 'firebase/firestore'
 import { useRouter, useParams } from 'next/navigation'
 
 export default function CollectionDetailPage() {
   const router = useRouter()
   const params = useParams()
-  const supabase = createClient()
-  
   const [collection, setCollection] = useState<any>(null)
   const [loading, setLoading] = useState(false)
   const [fetching, setFetching] = useState(true)
 
   useEffect(() => {
     const fetchCollection = async () => {
-      const { data } = await supabase
-        .from('milk_collections')
-        .select('*, suppliers(name), app_users(name)')
-        .eq('id', params.id)
-        .single()
+      try {
+        const collectionDoc = await getDoc(doc(db, 'milk_collections', params.id as string))
+        if (!collectionDoc.exists()) {
+          setFetching(false)
+          return
+        }
+        const data = { id: collectionDoc.id, ...collectionDoc.data() } as any
 
-      setCollection(data)
+        // Fetch supplier and operator in parallel
+        const [supplierData, operatorData] = await Promise.all([
+          data.supplier_id
+            ? getDoc(doc(db, 'suppliers', data.supplier_id)).then(d => d.exists() ? d.data() : null)
+            : Promise.resolve(null),
+          data.operator_id
+            ? getDoc(doc(db, 'app_users', data.operator_id)).then(d => d.exists() ? d.data() : null)
+            : Promise.resolve(null),
+        ])
+
+        setCollection({
+          ...data,
+          suppliers: supplierData,
+          app_users: operatorData,
+        })
+      } catch (err) {
+        console.error('Error fetching collection:', err)
+      }
       setFetching(false)
     }
     fetchCollection()
-  }, [params.id, supabase])
+  }, [params.id])
 
   const handleApprove = async () => {
     setLoading(true)
-    const { error } = await supabase
-      .from('milk_collections')
-      .update({ qc_status: 'approved' })
-      .eq('id', params.id)
-
-    if (!error) {
+    try {
+      await updateDoc(doc(db, 'milk_collections', params.id as string), {
+        qc_status: 'approved',
+      })
       router.push('/dashboard/collections')
-      router.refresh()
+    } catch (err) {
+      console.error('Error approving collection:', err)
     }
     setLoading(false)
   }
@@ -44,14 +61,13 @@ export default function CollectionDetailPage() {
   const handleReject = async () => {
     if (!confirm('Reject this collection?')) return
     setLoading(true)
-    const { error } = await supabase
-      .from('milk_collections')
-      .update({ qc_status: 'rejected' })
-      .eq('id', params.id)
-
-    if (!error) {
+    try {
+      await updateDoc(doc(db, 'milk_collections', params.id as string), {
+        qc_status: 'rejected',
+      })
       router.push('/dashboard/collections')
-      router.refresh()
+    } catch (err) {
+      console.error('Error rejecting collection:', err)
     }
     setLoading(false)
   }

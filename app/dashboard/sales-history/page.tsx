@@ -1,6 +1,7 @@
 'use client'
 
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, orderBy, doc, getDoc } from 'firebase/firestore'
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 
@@ -27,7 +28,6 @@ interface Agent {
 }
 
 export default function SalesHistoryPage() {
-  const supabase = createClient()
   const [sales, setSales] = useState<SaleRecord[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
@@ -49,84 +49,104 @@ export default function SalesHistoryPage() {
   }, [agentFilter, dateFilter])
 
   const fetchAgents = async () => {
-    const { data } = await supabase
-      .from('app_users')
-      .select('id, name')
-      .eq('role', 'delivery_agent')
-      .eq('status', 'active')
-      .order('name')
-    setAgents(data || [])
+    const snap = await getDocs(query(
+      collection(db, 'app_users'),
+      where('role', '==', 'delivery_agent'),
+      where('status', '==', 'active'),
+      orderBy('name')
+    ))
+    setAgents(snap.docs.map(d => ({ id: d.id, ...d.data() } as Agent)))
   }
 
   const fetchSales = async () => {
     setLoading(true)
     try {
-      // Fetch delivery_sales with related data
-      const { data: salesData, error: salesError } = await supabase
-        .from('delivery_sales')
-        .select('*')
-        .order('created_at', { ascending: false })
-
-      if (salesError) {
-        console.error('Error fetching sales:', salesError)
-        setLoading(false)
-        return
-      }
+      // Fetch delivery_sales
+      const salesSnap = await getDocs(query(
+        collection(db, 'delivery_sales'),
+        orderBy('created_at', 'desc')
+      ))
+      const salesData = salesSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[]
 
       // Enrich with delivery, shop, route, and agent info
       const enrichedSales: SaleRecord[] = []
       const shopSet = new Set<string>()
 
-      for (const sale of salesData || []) {
+      for (const sale of salesData) {
+        if (!sale.delivery_id) continue
+
         // Get delivery with shop and route info
-        const { data: delivery } = await supabase
-          .from('deliveries')
-          .select('id, shop_id, route_id, shops(name, city), routes(name, agent_id)')
-          .eq('id', sale.delivery_id)
-          .single()
+        const deliverySnap = await getDoc(doc(db, 'deliveries', sale.delivery_id))
+        if (!deliverySnap.exists()) continue
 
-        if (!delivery) continue
+        const delivery = { id: deliverySnap.id, ...deliverySnap.data() } as any
+        let agentId: string | null = null
 
-        const agentId = (delivery.routes as any)?.agent_id
-        
+        // Get route for agent_id
+        if (delivery.route_id) {
+          const routeSnap = await getDoc(doc(db, 'routes', delivery.route_id))
+          if (routeSnap.exists()) {
+            agentId = (routeSnap.data() as any).agent_id || null
+          }
+        }
+
         // Apply agent filter
         if (agentFilter && agentId !== agentFilter) continue
-        
+
         // Apply date filter
         if (dateFilter) {
           const saleDate = new Date(sale.created_at).toISOString().split('T')[0]
           if (saleDate !== dateFilter) continue
         }
 
+        // Get shop info
+        let shopName = 'Unknown Shop'
+        let shopCity = ''
+        if (delivery.shop_id) {
+          const shopSnap = await getDoc(doc(db, 'shops', delivery.shop_id))
+          if (shopSnap.exists()) {
+            const shopData = shopSnap.data() as any
+            shopName = shopData.name || 'Unknown Shop'
+            shopCity = shopData.city || ''
+          }
+        }
+
+        // Get route name
+        let routeName = 'Unknown Route'
+        if (delivery.route_id) {
+          const routeSnap = await getDoc(doc(db, 'routes', delivery.route_id))
+          if (routeSnap.exists()) {
+            routeName = (routeSnap.data() as any).name || 'Unknown Route'
+          }
+        }
+
         // Get agent name
         let agentName = 'Unknown'
         if (agentId) {
-          const { data: agent } = await supabase
-            .from('app_users')
-            .select('name')
-            .eq('id', agentId)
-            .single()
-          agentName = agent?.name || 'Unknown'
+          const agentSnap = await getDoc(doc(db, 'app_users', agentId))
+          if (agentSnap.exists()) {
+            agentName = (agentSnap.data() as any).name || 'Unknown'
+          }
         }
 
-        shopSet.add(delivery.shop_id)
+        if (delivery.shop_id) shopSet.add(delivery.shop_id)
 
         enrichedSales.push({
           ...sale,
-          shop_name: (delivery.shops as any)?.name || 'Unknown Shop',
-          shop_city: (delivery.shops as any)?.city || '',
+          shop_name: shopName,
+          shop_city: shopCity,
           agent_name: agentName,
-          agent_id: agentId,
-          route_name: (delivery.routes as any)?.name || 'Unknown Route',
-        })
+          agent_id: agentId || undefined,
+          route_name: routeName,
+        } as SaleRecord)
       }
 
       setSales(enrichedSales)
-      
+
       // Calculate summary
       const totalQty = enrichedSales.reduce((s, r) => s + parseFloat(String(r.quantity_sold || 0)), 0)
       const totalRev = enrichedSales.reduce((s, r) => s + parseFloat(String(r.total_amount || 0)), 0)
-      
+
       setSummary({
         totalSales: enrichedSales.length,
         totalQuantity: totalQty,
@@ -233,7 +253,7 @@ export default function SalesHistoryPage() {
           <div className="text-5xl mb-4">📋</div>
           <h3 className="text-lg font-semibold text-gray-900 mb-2">No Sales Found</h3>
           <p className="text-gray-600">
-            {agentFilter || dateFilter 
+            {agentFilter || dateFilter
               ? 'No sales match the selected filters. Try adjusting your filters.'
               : 'Sales records will appear here once deliveries are made.'}
           </p>

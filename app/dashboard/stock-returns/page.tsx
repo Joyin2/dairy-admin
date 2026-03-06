@@ -1,6 +1,7 @@
 'use client'
 
-import { createClient } from '@/lib/supabase/client'
+import { db, auth } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, orderBy, doc, updateDoc, getDoc } from 'firebase/firestore'
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 
@@ -37,7 +38,6 @@ interface ReturnItem {
 }
 
 export default function StockReturnsPage() {
-  const supabase = createClient()
   const [returns, setReturns] = useState<ReturnRequest[]>([])
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState('pending')
@@ -55,56 +55,50 @@ export default function StockReturnsPage() {
   }, [statusFilter])
 
   const fetchSummary = async () => {
-    const { data } = await supabase
-      .from('stock_returns')
-      .select('status, total_quantity')
-    
-    if (data) {
-      const pending = data.filter(r => r.status === 'pending').length
-      const approved = data.filter(r => r.status === 'approved').length
-      const totalPendingQty = data
-        .filter(r => r.status === 'pending')
-        .reduce((sum, r) => sum + parseFloat(String(r.total_quantity || 0)), 0)
-      
-      setSummary({ pending, approved, totalPendingQty })
-    }
+    const snap = await getDocs(collection(db, 'stock_returns'))
+    const data = snap.docs.map(d => ({ id: d.id, ...d.data() })) as any[]
+
+    const pending = data.filter(r => r.status === 'pending').length
+    const approved = data.filter(r => r.status === 'approved').length
+    const totalPendingQty = data
+      .filter(r => r.status === 'pending')
+      .reduce((sum, r) => sum + parseFloat(String(r.total_quantity || 0)), 0)
+
+    setSummary({ pending, approved, totalPendingQty })
   }
 
   const fetchReturns = async () => {
     setLoading(true)
     try {
-      let query = supabase
-        .from('stock_returns')
-        .select('*')
-        .order('created_at', { ascending: false })
-
+      let returnsQuery
       if (statusFilter) {
-        query = query.eq('status', statusFilter)
+        returnsQuery = query(collection(db, 'stock_returns'), where('status', '==', statusFilter), orderBy('created_at', 'desc'))
+      } else {
+        returnsQuery = query(collection(db, 'stock_returns'), orderBy('created_at', 'desc'))
       }
 
-      const { data, error } = await query
-
-      if (error) {
-        console.error('Error fetching returns:', error)
-        setLoading(false)
-        return
-      }
+      const snap = await getDocs(returnsQuery)
+      const data = snap.docs.map(d => ({ id: d.id, ...d.data() })) as any[]
 
       // Enrich with agent info and items
       const enriched = await Promise.all(
-        (data || []).map(async (ret: any) => {
-          const [agentRes, reviewerRes, itemsRes] = await Promise.all([
-            supabase.from('app_users').select('name, email').eq('id', ret.agent_id).single(),
-            ret.reviewed_by
-              ? supabase.from('app_users').select('name').eq('id', ret.reviewed_by).single()
-              : Promise.resolve({ data: null }),
-            supabase.from('stock_return_items').select('*').eq('return_id', ret.id),
+        data.map(async (ret: any) => {
+          const [agentSnap, itemsSnap] = await Promise.all([
+            getDoc(doc(db, 'app_users', ret.agent_id)),
+            getDocs(query(collection(db, 'stock_return_items'), where('return_id', '==', ret.id))),
           ])
+
+          let reviewedByUser = null
+          if (ret.reviewed_by) {
+            const reviewerSnap = await getDoc(doc(db, 'app_users', ret.reviewed_by))
+            if (reviewerSnap.exists()) reviewedByUser = { name: (reviewerSnap.data() as any).name }
+          }
+
           return {
             ...ret,
-            agent: agentRes.data,
-            reviewed_by_user: reviewerRes.data,
-            items: itemsRes.data || [],
+            agent: agentSnap.exists() ? { id: agentSnap.id, ...agentSnap.data() } : null,
+            reviewed_by_user: reviewedByUser,
+            items: itemsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
           }
         })
       )
@@ -121,86 +115,63 @@ export default function StockReturnsPage() {
 
     setProcessing(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
+      const user = auth.currentUser
       let adminId = null
       if (user) {
-        const { data: appUser } = await supabase
-          .from('app_users')
-          .select('id')
-          .eq('auth_uid', user.id)
-          .single()
-        adminId = appUser?.id
+        const appUserSnap = await getDocs(query(collection(db, 'app_users'), where('auth_uid', '==', user.uid)))
+        if (!appUserSnap.empty) adminId = appUserSnap.docs[0].id
       }
 
       // Update all items to restock
       for (const item of returnRequest.items) {
         // Validate: check current remaining stock for this item
-        const { data: stockItem } = await supabase
-          .from('agent_stock_items')
-          .select('quantity_allocated, quantity_sold, quantity_returned')
-          .eq('id', item.stock_item_id)
-          .single()
+        const stockItemSnap = await getDoc(doc(db, 'agent_stock_items', item.stock_item_id))
 
-        if (stockItem) {
+        if (stockItemSnap.exists()) {
+          const stockItem = stockItemSnap.data() as any
           const currentRemaining = parseFloat(String(stockItem.quantity_allocated || 0)) -
             parseFloat(String(stockItem.quantity_sold || 0)) -
             parseFloat(String(stockItem.quantity_returned || 0))
-          // Use the lesser of requested return qty and actual remaining
           const actualReturnQty = Math.min(item.quantity_returned, currentRemaining)
 
           // Update return item disposition
-          await supabase
-            .from('stock_return_items')
-            .update({
-              disposition: 'restock',
-              restock_quantity: actualReturnQty,
-              waste_quantity: 0,
-            })
-            .eq('id', item.id)
+          await updateDoc(doc(db, 'stock_return_items', item.id), {
+            disposition: 'restock',
+            restock_quantity: actualReturnQty,
+            waste_quantity: 0,
+          })
 
           // Add back to production_inventory
           if (item.inventory_item_id && actualReturnQty > 0) {
-            const { data: invItem } = await supabase
-              .from('production_inventory')
-              .select('quantity')
-              .eq('id', item.inventory_item_id)
-              .single()
-
-            if (invItem) {
-              await supabase
-                .from('production_inventory')
-                .update({ quantity: parseFloat(String(invItem.quantity)) + actualReturnQty })
-                .eq('id', item.inventory_item_id)
+            const invItemSnap = await getDoc(doc(db, 'production_inventory', item.inventory_item_id))
+            if (invItemSnap.exists()) {
+              const invItem = invItemSnap.data() as any
+              await updateDoc(doc(db, 'production_inventory', item.inventory_item_id), {
+                quantity: parseFloat(String(invItem.quantity)) + actualReturnQty
+              })
             }
           }
 
           // Update agent_stock_items.quantity_returned
           const newReturned = parseFloat(String(stockItem.quantity_returned || 0)) + actualReturnQty
-          await supabase
-            .from('agent_stock_items')
-            .update({ quantity_returned: newReturned })
-            .eq('id', item.stock_item_id)
+          await updateDoc(doc(db, 'agent_stock_items', item.stock_item_id), {
+            quantity_returned: newReturned
+          })
         }
       }
 
       // Update return request status
-      await supabase
-        .from('stock_returns')
-        .update({
-          status: 'approved',
-          reviewed_by: adminId,
-          reviewed_at: new Date().toISOString(),
-        })
-        .eq('id', returnRequest.id)
+      await updateDoc(doc(db, 'stock_returns', returnRequest.id), {
+        status: 'approved',
+        reviewed_by: adminId,
+        reviewed_at: new Date().toISOString(),
+      })
 
       // Mark allocation as completed now that return is approved
-      await supabase
-        .from('agent_stock_allocations')
-        .update({
-          status: 'completed',
-          completed_at: new Date().toISOString(),
-        })
-        .eq('id', returnRequest.allocation_id)
+      await updateDoc(doc(db, 'agent_stock_allocations', returnRequest.allocation_id), {
+        status: 'completed',
+        completed_at: new Date().toISOString(),
+      })
 
       setSelectedReturn(null)
       fetchReturns()
@@ -216,28 +187,21 @@ export default function StockReturnsPage() {
 
     setProcessing(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
+      const user = auth.currentUser
       let adminId = null
       if (user) {
-        const { data: appUser } = await supabase
-          .from('app_users')
-          .select('id')
-          .eq('auth_uid', user.id)
-          .single()
-        adminId = appUser?.id
+        const appUserSnap = await getDocs(query(collection(db, 'app_users'), where('auth_uid', '==', user.uid)))
+        if (!appUserSnap.empty) adminId = appUserSnap.docs[0].id
       }
 
       // Update all items to rejected
       for (const item of returnRequest.items) {
-        await supabase
-          .from('stock_return_items')
-          .update({
-            disposition: 'rejected',
-            restock_quantity: 0,
-            waste_quantity: 0,
-            waste_reason: 'Rejected by admin - agent to continue selling',
-          })
-          .eq('id', item.id)
+        await updateDoc(doc(db, 'stock_return_items', item.id), {
+          disposition: 'rejected',
+          restock_quantity: 0,
+          waste_quantity: 0,
+          waste_reason: 'Rejected by admin - agent to continue selling',
+        })
       }
 
       // NOTE: Do NOT update agent_stock_items.quantity_returned
@@ -245,59 +209,41 @@ export default function StockReturnsPage() {
       // Do NOT mark allocation as completed - agent stays active.
 
       // Fix quantity_returned on stock items - recalculate based on approved returns only
-      // This handles old data where quantity_returned was prematurely updated
       for (const item of returnRequest.items) {
         if (item.stock_item_id) {
-          // Get current stock item
-          const { data: stockItem } = await supabase
-            .from('agent_stock_items')
-            .select('id, quantity_returned')
-            .eq('id', item.stock_item_id)
-            .single()
-
-          if (stockItem) {
+          const stockItemSnap = await getDoc(doc(db, 'agent_stock_items', item.stock_item_id))
+          if (stockItemSnap.exists()) {
             // Sum only approved return quantities (restock or waste) for this stock item
-            const { data: approvedItems } = await supabase
-              .from('stock_return_items')
-              .select('quantity_returned')
-              .eq('stock_item_id', item.stock_item_id)
-              .in('disposition', ['restock', 'waste'])
-
-            const correctReturned = (approvedItems || []).reduce(
-              (sum: number, ri: any) => sum + parseFloat(String(ri.quantity_returned || 0)), 0
+            const approvedSnap = await getDocs(query(
+              collection(db, 'stock_return_items'),
+              where('stock_item_id', '==', item.stock_item_id),
+              where('disposition', 'in', ['restock', 'waste'])
+            ))
+            const correctReturned = approvedSnap.docs.reduce(
+              (sum: number, d: any) => sum + parseFloat(String(d.data().quantity_returned || 0)), 0
             )
-
-            await supabase
-              .from('agent_stock_items')
-              .update({ quantity_returned: correctReturned })
-              .eq('id', item.stock_item_id)
+            await updateDoc(doc(db, 'agent_stock_items', item.stock_item_id), {
+              quantity_returned: correctReturned
+            })
           }
         }
       }
 
       // Reactivate allocation if it was prematurely completed
-      const { data: alloc } = await supabase
-        .from('agent_stock_allocations')
-        .select('status')
-        .eq('id', returnRequest.allocation_id)
-        .single()
-
-      if (alloc?.status === 'completed') {
-        await supabase
-          .from('agent_stock_allocations')
-          .update({ status: 'in_delivery', completed_at: null })
-          .eq('id', returnRequest.allocation_id)
+      const allocSnap = await getDoc(doc(db, 'agent_stock_allocations', returnRequest.allocation_id))
+      if (allocSnap.exists() && (allocSnap.data() as any).status === 'completed') {
+        await updateDoc(doc(db, 'agent_stock_allocations', returnRequest.allocation_id), {
+          status: 'in_delivery',
+          completed_at: null
+        })
       }
 
       // Update return request status
-      await supabase
-        .from('stock_returns')
-        .update({
-          status: 'rejected',
-          reviewed_by: adminId,
-          reviewed_at: new Date().toISOString(),
-        })
-        .eq('id', returnRequest.id)
+      await updateDoc(doc(db, 'stock_returns', returnRequest.id), {
+        status: 'rejected',
+        reviewed_by: adminId,
+        reviewed_at: new Date().toISOString(),
+      })
 
       setSelectedReturn(null)
       fetchReturns()
@@ -386,7 +332,7 @@ export default function StockReturnsPage() {
           <div className="text-5xl mb-4">📦</div>
           <h3 className="text-lg font-semibold text-gray-900 mb-2">No Return Requests</h3>
           <p className="text-gray-600">
-            {statusFilter === 'pending' 
+            {statusFilter === 'pending'
               ? 'No pending return requests to review.'
               : 'No return requests found for the selected filter.'}
           </p>
@@ -524,16 +470,15 @@ export default function StockReturnsPage() {
 }
 
 // Review Modal Component
-function ReviewModal({ 
-  returnRequest, 
-  onClose, 
-  onComplete 
-}: { 
+function ReviewModal({
+  returnRequest,
+  onClose,
+  onComplete
+}: {
   returnRequest: ReturnRequest
   onClose: () => void
   onComplete: () => void
 }) {
-  const supabase = createClient()
   const [items, setItems] = useState<(ReturnItem & { localDisposition: string; localWasteReason: string })[]>([])
   const [processing, setProcessing] = useState(false)
 
@@ -550,15 +495,11 @@ function ReviewModal({
   const handleSubmit = async () => {
     setProcessing(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
+      const user = auth.currentUser
       let adminId = null
       if (user) {
-        const { data: appUser } = await supabase
-          .from('app_users')
-          .select('id')
-          .eq('auth_uid', user.id)
-          .single()
-        adminId = appUser?.id
+        const appUserSnap = await getDocs(query(collection(db, 'app_users'), where('auth_uid', '==', user.uid)))
+        if (!appUserSnap.empty) adminId = appUserSnap.docs[0].id
       }
 
       let hasRestock = false
@@ -566,58 +507,45 @@ function ReviewModal({
 
       for (const item of items) {
         const isRestock = item.localDisposition === 'restock'
-        
+
         if (isRestock) hasRestock = true
         else hasWaste = true
 
         // Validate: check current remaining stock for this item
-        const { data: stockItem } = await supabase
-          .from('agent_stock_items')
-          .select('quantity_allocated, quantity_sold, quantity_returned')
-          .eq('id', item.stock_item_id)
-          .single()
+        const stockItemSnap = await getDoc(doc(db, 'agent_stock_items', item.stock_item_id))
 
-        if (stockItem) {
+        if (stockItemSnap.exists()) {
+          const stockItem = stockItemSnap.data() as any
           const currentRemaining = parseFloat(String(stockItem.quantity_allocated || 0)) -
             parseFloat(String(stockItem.quantity_sold || 0)) -
             parseFloat(String(stockItem.quantity_returned || 0))
           const actualReturnQty = Math.min(item.quantity_returned, currentRemaining)
 
           // Update return item
-          await supabase
-            .from('stock_return_items')
-            .update({
-              disposition: item.localDisposition,
-              restock_quantity: isRestock ? actualReturnQty : 0,
-              waste_quantity: isRestock ? 0 : actualReturnQty,
-              waste_reason: isRestock ? null : item.localWasteReason,
-            })
-            .eq('id', item.id)
+          await updateDoc(doc(db, 'stock_return_items', item.id), {
+            disposition: item.localDisposition,
+            restock_quantity: isRestock ? actualReturnQty : 0,
+            waste_quantity: isRestock ? 0 : actualReturnQty,
+            waste_reason: isRestock ? null : item.localWasteReason,
+          })
 
           // Only add back to inventory if restocking
           if (isRestock && item.inventory_item_id && actualReturnQty > 0) {
-            const { data: invItem } = await supabase
-              .from('production_inventory')
-              .select('quantity')
-              .eq('id', item.inventory_item_id)
-              .single()
-
-            if (invItem) {
-              await supabase
-                .from('production_inventory')
-                .update({ quantity: parseFloat(String(invItem.quantity)) + actualReturnQty })
-                .eq('id', item.inventory_item_id)
+            const invItemSnap = await getDoc(doc(db, 'production_inventory', item.inventory_item_id))
+            if (invItemSnap.exists()) {
+              const invItem = invItemSnap.data() as any
+              await updateDoc(doc(db, 'production_inventory', item.inventory_item_id), {
+                quantity: parseFloat(String(invItem.quantity)) + actualReturnQty
+              })
             }
           }
 
           // Update agent_stock_items.quantity_returned for both restock and waste
-          // (the agent is returning the item either way - it's no longer with them)
           if (actualReturnQty > 0) {
             const newReturned = parseFloat(String(stockItem.quantity_returned || 0)) + actualReturnQty
-            await supabase
-              .from('agent_stock_items')
-              .update({ quantity_returned: newReturned })
-              .eq('id', item.stock_item_id)
+            await updateDoc(doc(db, 'agent_stock_items', item.stock_item_id), {
+              quantity_returned: newReturned
+            })
           }
         }
       }
@@ -627,23 +555,17 @@ function ReviewModal({
       if (hasRestock && hasWaste) newStatus = 'partial'
       else if (!hasRestock && hasWaste) newStatus = 'rejected'
 
-      await supabase
-        .from('stock_returns')
-        .update({
-          status: newStatus,
-          reviewed_by: adminId,
-          reviewed_at: new Date().toISOString(),
-        })
-        .eq('id', returnRequest.id)
+      await updateDoc(doc(db, 'stock_returns', returnRequest.id), {
+        status: newStatus,
+        reviewed_by: adminId,
+        reviewed_at: new Date().toISOString(),
+      })
 
       // Mark allocation as completed now that return is processed
-      await supabase
-        .from('agent_stock_allocations')
-        .update({
-          status: 'completed',
-          completed_at: new Date().toISOString(),
-        })
-        .eq('id', returnRequest.allocation_id)
+      await updateDoc(doc(db, 'agent_stock_allocations', returnRequest.allocation_id), {
+        status: 'completed',
+        completed_at: new Date().toISOString(),
+      })
 
       onComplete()
     } catch (err) {
@@ -653,7 +575,7 @@ function ReviewModal({
   }
 
   const updateItem = (itemId: string, field: string, value: string) => {
-    setItems(items.map(i => 
+    setItems(items.map(i =>
       i.id === itemId ? { ...i, [field]: value } : i
     ))
   }

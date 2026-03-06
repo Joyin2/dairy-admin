@@ -1,13 +1,13 @@
 'use client'
 
 import { useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { db, auth } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, addDoc } from 'firebase/firestore'
 import { useRouter } from 'next/navigation'
 
 export default function CreateSupplierPage() {
   const router = useRouter()
-  const supabase = createClient()
-  
+
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
@@ -34,6 +34,7 @@ export default function CreateSupplierPage() {
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [paymentTermsOther, setPaymentTermsOther] = useState('')
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -41,38 +42,33 @@ export default function CreateSupplierPage() {
     setError(null)
 
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      
-      // Get app_users.id from auth_uid
-      const { data: appUser } = await supabase
-        .from('app_users')
-        .select('id')
-        .eq('auth_uid', user?.id)
-        .single()
-      
-      const { error: insertError } = await supabase
-        .from('suppliers')
-        .insert({
-          name: formData.name,
-          phone: formData.phone,
-          email: formData.email,
-          address: formData.address,
-          city: formData.city,
-          state: formData.state,
-          pincode: formData.pincode,
-          gst_number: formData.gst_number,
-          pan_number: formData.pan_number,
-          contact_person: formData.contact_person,
-          alternate_phone: formData.alternate_phone,
-          supply_capacity: formData.supply_capacity,
-          payment_terms: formData.payment_terms,
-          kyc_status: formData.kyc_status,
-          auto_receipt_pref: formData.auto_receipt_pref,
-          bank_account: formData.bank_account,
-          created_by: appUser?.id,
-        })
+      const user = auth.currentUser
+      let appUserId = null
+      if (user) {
+        const appUserSnap = await getDocs(query(collection(db, 'app_users'), where('auth_uid', '==', user.uid)))
+        if (!appUserSnap.empty) appUserId = appUserSnap.docs[0].id
+      }
 
-      if (insertError) throw insertError
+      await addDoc(collection(db, 'suppliers'), {
+        name: formData.name,
+        phone: formData.phone,
+        email: formData.email,
+        address: formData.address,
+        city: formData.city,
+        state: formData.state,
+        pincode: formData.pincode,
+        gst_number: formData.gst_number,
+        pan_number: formData.pan_number,
+        contact_person: formData.contact_person,
+        alternate_phone: formData.alternate_phone,
+        supply_capacity: formData.supply_capacity,
+        payment_terms: formData.payment_terms === 'other' ? paymentTermsOther : formData.payment_terms,
+        kyc_status: formData.kyc_status,
+        auto_receipt_pref: formData.auto_receipt_pref,
+        bank_account: formData.bank_account,
+        created_by: appUserId,
+        created_at: new Date().toISOString(),
+      })
 
       router.push('/dashboard/suppliers')
       router.refresh()
@@ -253,7 +249,18 @@ export default function CreateSupplierPage() {
                 <option value="7_days">7 Days</option>
                 <option value="15_days">15 Days</option>
                 <option value="30_days">30 Days</option>
+                <option value="other">Other</option>
               </select>
+              {formData.payment_terms === 'other' && (
+                <input
+                  type="text"
+                  value={paymentTermsOther}
+                  onChange={(e) => setPaymentTermsOther(e.target.value)}
+                  className="w-full mt-2 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900"
+                  placeholder="Specify payment terms"
+                  required
+                />
+              )}
             </div>
           </div>
 

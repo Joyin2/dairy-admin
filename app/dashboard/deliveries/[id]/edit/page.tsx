@@ -2,13 +2,13 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter, useParams } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, orderBy, doc, getDoc, updateDoc } from 'firebase/firestore'
 
 export default function EditDeliveryPage() {
   const router = useRouter()
   const params = useParams()
-  const supabase = createClient()
-  
+
   const [routes, setRoutes] = useState<any[]>([])
   const [allShops, setAllShops] = useState<any[]>([])
   const [shops, setShops] = useState<any[]>([])
@@ -27,19 +27,25 @@ export default function EditDeliveryPage() {
 
   useEffect(() => {
     const fetchData = async () => {
-      const [routesRes, shopsRes, productsRes, deliveryRes] = await Promise.all([
-        supabase.from('routes').select('id, name, area, delivery_type, is_active').eq('is_active', true).order('name'),
-        supabase.from('shops').select('id, name, city, address, route_id, status').eq('status', 'approved').order('name'),
-        supabase.from('products').select('id, name, sku, uom').order('name'),
-        supabase.from('deliveries').select('*').eq('id', params.id).single(),
+      const deliveryId = params.id as string
+
+      const [routesSnap, shopsSnap, productsSnap, deliverySnap] = await Promise.all([
+        getDocs(query(collection(db, 'routes'), where('is_active', '==', true), orderBy('name'))),
+        getDocs(query(collection(db, 'shops'), where('status', '==', 'approved'), orderBy('name'))),
+        getDocs(query(collection(db, 'products'), orderBy('name'))),
+        getDoc(doc(db, 'deliveries', deliveryId)),
       ])
-      
-      setRoutes(routesRes.data || [])
-      setAllShops(shopsRes.data || [])
-      setProducts(productsRes.data || [])
-      
-      if (deliveryRes.data) {
-        const delivery = deliveryRes.data
+
+      const routesData = routesSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+      const shopsData = shopsSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[]
+      const productsData = productsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+
+      setRoutes(routesData)
+      setAllShops(shopsData)
+      setProducts(productsData)
+
+      if (deliverySnap.exists()) {
+        const delivery = { id: deliverySnap.id, ...deliverySnap.data() } as any
         setFormData({
           route_id: delivery.route_id || '',
           shop_id: delivery.shop_id || '',
@@ -47,7 +53,7 @@ export default function EditDeliveryPage() {
           payment_mode: delivery.payment_mode || 'cash',
           notes: delivery.notes || '',
         })
-        
+
         // Load existing items
         if (delivery.items && Array.isArray(delivery.items)) {
           setSelectedProducts(delivery.items.map((item: any) => ({
@@ -58,27 +64,27 @@ export default function EditDeliveryPage() {
             uom: item.uom || 'L',
           })))
         }
-        
+
         // Set initial shops based on route
         if (delivery.route_id) {
-          const filteredShops = (shopsRes.data || []).filter((s: any) => s.route_id === delivery.route_id)
+          const filteredShops = shopsData.filter((s: any) => s.route_id === delivery.route_id)
           setShops(filteredShops)
         } else {
-          setShops(shopsRes.data || [])
+          setShops(shopsData)
         }
       }
-      
+
       setFetching(false)
     }
     fetchData()
-  }, [supabase, params.id])
+  }, [params.id])
 
   useEffect(() => {
     if (formData.route_id) {
       const filteredShops = allShops.filter(s => s.route_id === formData.route_id)
       setShops(filteredShops)
       if (formData.shop_id && !filteredShops.find(s => s.id === formData.shop_id)) {
-        setFormData({ ...formData, shop_id: '' })
+        setFormData(prev => ({ ...prev, shop_id: '' }))
       }
     } else {
       setShops(allShops)
@@ -99,7 +105,7 @@ export default function EditDeliveryPage() {
   }
 
   const updateProduct = (productId: string, field: string, value: string) => {
-    setSelectedProducts(selectedProducts.map(p => 
+    setSelectedProducts(selectedProducts.map(p =>
       p.id === productId ? { ...p, [field]: value } : p
     ))
   }
@@ -122,19 +128,16 @@ export default function EditDeliveryPage() {
         uom: p.uom || 'L',
       }))
 
-      const { error: updateError } = await supabase.from('deliveries').update({
+      await updateDoc(doc(db, 'deliveries', params.id as string), {
         route_id: formData.route_id || null,
         shop_id: formData.shop_id,
         expected_qty: totalQty,
         items,
         payment_mode: formData.payment_mode,
         expected_amount: totalAmount,
-      }).eq('id', params.id)
-
-      if (updateError) throw updateError
+      })
 
       router.push('/dashboard/deliveries')
-      router.refresh()
     } catch (err: any) {
       setError(err.message || 'Failed to update delivery')
     } finally {
@@ -197,7 +200,7 @@ export default function EditDeliveryPage() {
             <label className="block text-sm font-medium text-gray-700 mb-3">
               Products ({selectedProducts.length} items)
             </label>
-            
+
             <div className="mb-4">
               <select
                 onChange={(e) => {

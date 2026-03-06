@@ -1,7 +1,9 @@
 'use client'
 
-import { useState, useEffect, Suspense, useMemo } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { useState, useEffect, Suspense } from 'react'
+import { auth, db } from '@/lib/firebase/client'
+import { signInWithEmailAndPassword, signOut } from 'firebase/auth'
+import { collection, query, where, getDocs, updateDoc, doc } from 'firebase/firestore'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 
@@ -11,108 +13,78 @@ function LoginForm() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
-  const [clientReady, setClientReady] = useState(false)
   const router = useRouter()
   const searchParams = useSearchParams()
-  
-  // Create client only once and handle initialization errors
-  const supabase = useMemo(() => {
-    try {
-      const client = createClient()
-      setClientReady(true)
-      return client
-    } catch (err) {
-      console.error('Failed to create Supabase client:', err)
-      setError('Failed to initialize authentication. Please check your internet connection.')
-      return null
-    }
-  }, [])
 
   useEffect(() => {
     if (searchParams.get('signup') === 'success') {
       setSuccess('Account created successfully! Please sign in.')
     }
-    if (searchParams.get('message') === 'pending') {
-      setSuccess('Account created! Pending admin approval. You will be able to login once approved.')
-    }
 
-    // Clear any existing session on mount to prevent token refresh issues
-    if (supabase) {
-      supabase.auth.getSession().then(({ data: { session } }) => {
-        if (session) {
-          // Clear existing session to prevent auto-refresh errors
-          supabase.auth.signOut().catch(() => {})
-        }
-      }).catch(() => {})
-    }
-  }, [searchParams, supabase])
+  }, [searchParams])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
-    
-    // Check if client is ready
-    if (!supabase || !clientReady) {
-      setError('Authentication service is not ready. Please refresh the page.')
-      return
-    }
-    
     setLoading(true)
     setError(null)
 
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      })
+      const { user } = await signInWithEmailAndPassword(auth, email, password)
 
-      if (error) throw error
+      // Check user status and role in Firestore
+      const q = query(collection(db, 'app_users'), where('auth_uid', '==', user.uid))
+      const snap = await getDocs(q)
 
-      // Check user status and role
-      if (data.user) {
-        const { data: userData, error: userError } = await supabase
-          .from('app_users')
-          .select('status, role')
-          .eq('auth_uid', data.user.id)
-          .single()
+      if (snap.empty) throw new Error('User profile not found.')
 
-        if (userError) throw userError
+      const userDoc = snap.docs[0]
+      const userData = userDoc.data()
 
-        // Block delivery agents from admin panel
-        if (userData.role === 'delivery_agent') {
-          await supabase.auth.signOut()
-          setError('Access denied. Delivery agents cannot access the admin panel. Please use the delivery app.')
-          setLoading(false)
-          return
-        }
-
-        // Block pending users
-        if (userData.status === 'pending') {
-          await supabase.auth.signOut()
-          setError('Your account is pending approval. Please wait for admin approval.')
-          setLoading(false)
-          return
-        }
-
-        // Block inactive users
-        if (userData.status !== 'active') {
-          await supabase.auth.signOut()
-          setError('Your account is inactive. Please contact support.')
-          setLoading(false)
-          return
-        }
-
-        // Update last login
-        await supabase
-          .from('app_users')
-          .update({ last_login: new Date().toISOString() })
-          .eq('auth_uid', data.user.id)
+      if (userData.role === 'delivery_agent') {
+        await signOut(auth)
+        setError('Access denied. Delivery agents cannot access the admin panel. Please use the delivery app.')
+        setLoading(false)
+        return
       }
+
+      if (userData.status === 'pending') {
+        await signOut(auth)
+        setError('Your account is pending approval. Please wait for admin approval.')
+        setLoading(false)
+        return
+      }
+
+      if (userData.status !== 'active') {
+        await signOut(auth)
+        setError('Your account is inactive. Please contact support.')
+        setLoading(false)
+        return
+      }
+
+      // Create server session cookie (also syncs custom claims for Firestore rules)
+      const idToken = await user.getIdToken()
+      const sessionRes = await fetch('/api/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+      })
+      if (!sessionRes.ok) throw new Error('Failed to create session')
+
+      // Force token refresh so Firestore client SDK gets the updated custom claims
+      await user.getIdToken(true)
+
+      // Update last login
+      await updateDoc(doc(db, 'app_users', userDoc.id), {
+        last_login: new Date().toISOString(),
+      })
 
       router.push('/dashboard')
       router.refresh()
     } catch (err: any) {
       console.error('Login error:', err)
-      if (err.message?.includes('fetch')) {
+      if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found') {
+        setError('Invalid email or password.')
+      } else if (err.message?.includes('fetch') || err.message?.includes('network')) {
         setError('Network error. Please check your internet connection and try again.')
       } else {
         setError(err.message || 'Failed to login')
@@ -131,11 +103,6 @@ function LoginForm() {
         </div>
 
         <form onSubmit={handleLogin} className="space-y-6">
-          {!clientReady && (
-            <div className="bg-yellow-50 border border-yellow-200 text-yellow-700 px-4 py-3 rounded-lg">
-              Connecting to authentication service...
-            </div>
-          )}
           {success && (
             <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg">
               {success}
@@ -179,16 +146,16 @@ function LoginForm() {
 
           <button
             type="submit"
-            disabled={loading || !clientReady}
+            disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? 'Signing in...' : !clientReady ? 'Connecting...' : 'Sign In'}
+            {loading ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
 
         <div className="mt-6 text-center">
           <p className="text-sm text-gray-600">
-            Don't have an account?{' '}
+            Don&apos;t have an account?{' '}
             <Link href="/signup" className="text-blue-600 hover:text-blue-800 font-medium">
               Sign up
             </Link>

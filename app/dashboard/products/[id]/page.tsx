@@ -1,23 +1,26 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { doc, getDoc, updateDoc } from 'firebase/firestore'
 import { useRouter, useParams } from 'next/navigation'
 
 export default function EditProductPage() {
   const router = useRouter()
   const params = useParams()
-  const supabase = createClient()
-  
+
   const [formData, setFormData] = useState({
     name: '',
     sku: '',
     uom: 'liter',
-    shelf_life_days: ''
+    shelf_life_days: '',
+    retail_rate: '',
+    wholesale_rate: ''
   })
   const [loading, setLoading] = useState(false)
   const [loadingData, setLoadingData] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [uomOther, setUomOther] = useState('')
 
   useEffect(() => {
     loadProduct()
@@ -25,20 +28,23 @@ export default function EditProductPage() {
 
   const loadProduct = async () => {
     try {
-      const { data, error } = await supabase
-        .from('products')
-        .select('*')
-        .eq('id', params.id)
-        .single()
+      const docRef = doc(db, 'products', params.id as string)
+      const snap = await getDoc(docRef)
 
-      if (error) throw error
-      
+      if (!snap.exists()) throw new Error('Product not found')
+
+      const data = snap.data()
       setFormData({
         name: data.name || '',
         sku: data.sku || '',
-        uom: data.uom || 'liter',
-        shelf_life_days: data.shelf_life_days?.toString() || ''
+        uom: ['liter', 'kg', 'piece', 'box'].includes(data.uom) ? data.uom : (data.uom ? 'other' : 'liter'),
+        shelf_life_days: data.shelf_life_days?.toString() || '',
+        retail_rate: data.retail_rate != null ? String(data.retail_rate) : '',
+        wholesale_rate: data.wholesale_rate != null ? String(data.wholesale_rate) : ''
       })
+      if (data.uom && !['liter', 'kg', 'piece', 'box'].includes(data.uom)) {
+        setUomOther(data.uom)
+      }
     } catch (err: any) {
       setError(err.message)
     } finally {
@@ -52,20 +58,18 @@ export default function EditProductPage() {
     setError(null)
 
     try {
-      const { error: updateError } = await supabase
-        .from('products')
-        .update({
-          name: formData.name,
-          sku: formData.sku,
-          uom: formData.uom,
-          shelf_life_days: formData.shelf_life_days ? parseInt(formData.shelf_life_days) : null
-        })
-        .eq('id', params.id)
-
-      if (updateError) throw updateError
+      const docRef = doc(db, 'products', params.id as string)
+      await updateDoc(docRef, {
+        name: formData.name,
+        sku: formData.sku,
+        uom: formData.uom === 'other' ? uomOther : formData.uom,
+        shelf_life_days: formData.shelf_life_days ? parseInt(formData.shelf_life_days) : null,
+        retail_rate: formData.retail_rate ? parseFloat(formData.retail_rate) : null,
+        wholesale_rate: formData.wholesale_rate ? parseFloat(formData.wholesale_rate) : null,
+        updated_at: new Date().toISOString(),
+      })
 
       router.push('/dashboard/products')
-      router.refresh()
     } catch (err: any) {
       setError(err.message || 'Failed to update product')
     } finally {
@@ -99,7 +103,7 @@ export default function EditProductPage() {
               {error}
             </div>
           )}
-          
+
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -113,7 +117,7 @@ export default function EditProductPage() {
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">SKU</label>
               <div className="flex gap-2">
@@ -133,7 +137,7 @@ export default function EditProductPage() {
               </div>
             </div>
           </div>
-          
+
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Unit of Measure</label>
@@ -146,9 +150,20 @@ export default function EditProductPage() {
                 <option value="kg">Kilogram</option>
                 <option value="piece">Piece</option>
                 <option value="box">Box</option>
+                <option value="other">Other</option>
               </select>
+              {formData.uom === 'other' && (
+                <input
+                  type="text"
+                  value={uomOther}
+                  onChange={(e) => setUomOther(e.target.value)}
+                  className="w-full mt-2 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  placeholder="Specify unit of measure"
+                  required
+                />
+              )}
             </div>
-            
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Shelf Life (days)</label>
               <input
@@ -156,6 +171,31 @@ export default function EditProductPage() {
                 value={formData.shelf_life_days}
                 onChange={(e) => setFormData({ ...formData, shelf_life_days: e.target.value })}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4 border-t pt-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Retail Rate (₹/unit)</label>
+              <input
+                type="number"
+                step="0.01"
+                value={formData.retail_rate}
+                onChange={(e) => setFormData({ ...formData, retail_rate: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                placeholder="Default for retail shops"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Wholesale Rate (₹/unit)</label>
+              <input
+                type="number"
+                step="0.01"
+                value={formData.wholesale_rate}
+                onChange={(e) => setFormData({ ...formData, wholesale_rate: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                placeholder="Default for wholesale shops"
               />
             </div>
           </div>

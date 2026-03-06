@@ -1,6 +1,7 @@
 'use client'
 
-import { createClient } from '@/lib/supabase/client'
+import { db, auth } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, doc, getDoc, updateDoc, addDoc, orderBy } from 'firebase/firestore'
 import { useEffect, useState } from 'react'
 
 interface ProductReturn {
@@ -73,7 +74,6 @@ const REASON_LABELS: Record<string, { label: string; icon: string }> = {
 }
 
 export default function ProductReturnsPage() {
-  const supabase = createClient()
   const [activeTab, setActiveTab] = useState<TabView>('pending')
   const [returns, setReturns] = useState<ProductReturn[]>([])
   const [wasteEntries, setWasteEntries] = useState<WasteEntry[]>([])
@@ -107,65 +107,56 @@ export default function ProductReturnsPage() {
   }
 
   const fetchSummary = async () => {
-    const { data } = await supabase
-      .from('product_returns')
-      .select('status, total_value')
+    const snap = await getDocs(collection(db, 'product_returns'))
+    const data = snap.docs.map(d => ({ id: d.id, ...d.data() } as any))
 
-    if (data) {
-      const pending = data.filter(r => r.status === 'pending').length
-      const approved = data.filter(r => ['approved_restock', 'approved_waste', 'partial'].includes(r.status)).length
-      const totalPendingValue = data
-        .filter(r => r.status === 'pending')
-        .reduce((sum, r) => sum + parseFloat(String(r.total_value || 0)), 0)
+    const pending = data.filter((r: any) => r.status === 'pending').length
+    const approved = data.filter((r: any) => ['approved_restock', 'approved_waste', 'partial'].includes(r.status)).length
+    const totalPendingValue = data
+      .filter((r: any) => r.status === 'pending')
+      .reduce((sum: number, r: any) => sum + parseFloat(String(r.total_value || 0)), 0)
 
-      const { data: wasteData } = await supabase
-        .from('waste_ledger')
-        .select('value_loss')
+    const wasteSnap = await getDocs(collection(db, 'waste_ledger'))
+    const wasteData = wasteSnap.docs.map(d => ({ id: d.id, ...d.data() } as any))
+    const totalWasteValue = wasteData.reduce((sum: number, w: any) => sum + parseFloat(String(w.value_loss || 0)), 0)
 
-      const totalWasteValue = (wasteData || [])
-        .reduce((sum, w) => sum + parseFloat(String(w.value_loss || 0)), 0)
-
-      setSummary({ pending, approved, totalPendingValue, totalWasteValue })
-    }
+    setSummary({ pending, approved, totalPendingValue, totalWasteValue })
   }
 
   const fetchReturns = async () => {
-    let query = supabase
-      .from('product_returns')
-      .select('*')
-      .order('created_at', { ascending: false })
+    // Fetch all product_returns ordered by created_at desc
+    const snap = await getDocs(collection(db, 'product_returns'))
+    let data = snap.docs.map(d => ({ id: d.id, ...d.data() } as any))
 
+    // Filter based on tab
     if (activeTab === 'pending') {
       if (statusFilter) {
-        query = query.eq('status', statusFilter)
+        data = data.filter((r: any) => r.status === statusFilter)
       }
     } else if (activeTab === 'return_ledger') {
-      query = query.in('status', ['approved_restock', 'approved_waste', 'partial', 'rejected'])
+      data = data.filter((r: any) => ['approved_restock', 'approved_waste', 'partial', 'rejected'].includes(r.status))
     }
 
-    const { data, error } = await query
-    if (error) {
-      console.error('Error fetching returns:', error)
-      return
-    }
+    data.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
 
     // Enrich with related data
     const enriched = await Promise.all(
-      (data || []).map(async (ret: any) => {
-        const [shopRes, routeRes, agentRes, reviewerRes, itemsRes] = await Promise.all([
-          ret.shop_id ? supabase.from('shops').select('name, owner_name, city').eq('id', ret.shop_id).single() : Promise.resolve({ data: null }),
-          ret.route_id ? supabase.from('routes').select('name, area').eq('id', ret.route_id).single() : Promise.resolve({ data: null }),
-          supabase.from('app_users').select('name, email').eq('id', ret.agent_id).single(),
-          ret.reviewed_by ? supabase.from('app_users').select('name').eq('id', ret.reviewed_by).single() : Promise.resolve({ data: null }),
-          supabase.from('product_return_items').select('*').eq('return_id', ret.id),
+      data.map(async (ret: any) => {
+        const [shopSnap, routeSnap, agentSnap, reviewerSnap, itemsSnap] = await Promise.all([
+          ret.shop_id ? getDoc(doc(db, 'shops', ret.shop_id)) : Promise.resolve(null),
+          ret.route_id ? getDoc(doc(db, 'routes', ret.route_id)) : Promise.resolve(null),
+          ret.agent_id ? getDoc(doc(db, 'app_users', ret.agent_id)) : Promise.resolve(null),
+          ret.reviewed_by ? getDoc(doc(db, 'app_users', ret.reviewed_by)) : Promise.resolve(null),
+          getDocs(query(collection(db, 'product_return_items'), where('return_id', '==', ret.id))),
         ])
+
         return {
           ...ret,
-          shop: shopRes.data,
-          route: routeRes.data,
-          agent: agentRes.data,
-          reviewed_by_user: reviewerRes.data,
-          items: itemsRes.data || [],
+          shop: shopSnap && (shopSnap as any).exists() ? (shopSnap as any).data() : null,
+          route: routeSnap && (routeSnap as any).exists() ? (routeSnap as any).data() : null,
+          agent: agentSnap && (agentSnap as any).exists() ? (agentSnap as any).data() : null,
+          reviewed_by_user: reviewerSnap && (reviewerSnap as any).exists() ? (reviewerSnap as any).data() : null,
+          items: itemsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
         }
       })
     )
@@ -173,48 +164,48 @@ export default function ProductReturnsPage() {
   }
 
   const fetchWasteLedger = async () => {
-    const { data, error } = await supabase
-      .from('waste_ledger')
-      .select('*')
-      .order('created_at', { ascending: false })
+    const snap = await getDocs(collection(db, 'waste_ledger'))
+    const data = snap.docs.map(d => ({ id: d.id, ...d.data() } as any))
+    data.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    setWasteEntries(data)
+  }
 
-    if (!error) {
-      setWasteEntries(data || [])
-    }
+  const getAdminId = async (): Promise<string | null> => {
+    const user = auth.currentUser
+    if (!user) return null
+    const q = query(collection(db, 'app_users'), where('auth_uid', '==', user.uid))
+    const snap = await getDocs(q)
+    return snap.empty ? null : snap.docs[0].id
   }
 
   const handleApproveRestock = async (returnReq: ProductReturn) => {
     if (!returnReq.items?.length) return
     setProcessing(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      let adminId = null
-      if (user) {
-        const { data: appUser } = await supabase.from('app_users').select('id').eq('auth_uid', user.id).single()
-        adminId = appUser?.id
-      }
+      const adminId = await getAdminId()
 
       for (const item of returnReq.items) {
-        await supabase.from('product_return_items').update({ disposition: 'restock' }).eq('id', item.id)
+        await updateDoc(doc(db, 'product_return_items', item.id), { disposition: 'restock' })
 
         // Add back to inventory
         if (item.inventory_item_id) {
-          const { data: invItem } = await supabase.from('production_inventory').select('quantity').eq('id', item.inventory_item_id).single()
-          if (invItem) {
-            await supabase.from('production_inventory').update({
-              quantity: parseFloat(String(invItem.quantity)) + item.quantity_returned
-            }).eq('id', item.inventory_item_id)
+          const invSnap = await getDoc(doc(db, 'production_inventory', item.inventory_item_id))
+          if (invSnap.exists()) {
+            const invData = invSnap.data() as any
+            await updateDoc(doc(db, 'production_inventory', item.inventory_item_id), {
+              quantity: parseFloat(String(invData.quantity)) + item.quantity_returned
+            })
           }
         }
       }
 
       // Update return status
-      await supabase.from('product_returns').update({
+      await updateDoc(doc(db, 'product_returns', returnReq.id), {
         status: 'approved_restock',
         reviewed_by: adminId,
         reviewed_at: new Date().toISOString(),
         admin_notes: 'All items approved for restock',
-      }).eq('id', returnReq.id)
+      })
 
       setSelectedReturn(null)
       fetchData()
@@ -228,18 +219,13 @@ export default function ProductReturnsPage() {
     if (!returnReq.items?.length) return
     setProcessing(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      let adminId = null
-      if (user) {
-        const { data: appUser } = await supabase.from('app_users').select('id').eq('auth_uid', user.id).single()
-        adminId = appUser?.id
-      }
+      const adminId = await getAdminId()
 
       for (const item of returnReq.items) {
-        await supabase.from('product_return_items').update({ disposition: 'waste' }).eq('id', item.id)
+        await updateDoc(doc(db, 'product_return_items', item.id), { disposition: 'waste' })
 
         // Add to waste ledger
-        await supabase.from('waste_ledger').insert({
+        await addDoc(collection(db, 'waste_ledger'), {
           product_return_item_id: item.id,
           product_name: item.product_name,
           batch_number: item.batch_number,
@@ -251,15 +237,16 @@ export default function ProductReturnsPage() {
           shop_name: returnReq.shop?.name || null,
           agent_name: returnReq.agent?.name || null,
           created_by: adminId,
+          created_at: new Date().toISOString(),
         })
       }
 
-      await supabase.from('product_returns').update({
+      await updateDoc(doc(db, 'product_returns', returnReq.id), {
         status: 'approved_waste',
         reviewed_by: adminId,
         reviewed_at: new Date().toISOString(),
         admin_notes: 'All items marked as waste',
-      }).eq('id', returnReq.id)
+      })
 
       setSelectedReturn(null)
       fetchData()
@@ -273,23 +260,18 @@ export default function ProductReturnsPage() {
     if (!returnReq.items?.length) return
     setProcessing(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      let adminId = null
-      if (user) {
-        const { data: appUser } = await supabase.from('app_users').select('id').eq('auth_uid', user.id).single()
-        adminId = appUser?.id
-      }
+      const adminId = await getAdminId()
 
       for (const item of returnReq.items) {
-        await supabase.from('product_return_items').update({ disposition: 'rejected' }).eq('id', item.id)
+        await updateDoc(doc(db, 'product_return_items', item.id), { disposition: 'rejected' })
       }
 
-      await supabase.from('product_returns').update({
+      await updateDoc(doc(db, 'product_returns', returnReq.id), {
         status: 'rejected',
         reviewed_by: adminId,
         reviewed_at: new Date().toISOString(),
         admin_notes: 'Return request rejected',
-      }).eq('id', returnReq.id)
+      })
 
       setSelectedReturn(null)
       fetchData()
@@ -663,7 +645,6 @@ function ReviewModal({
   onClose: () => void
   onComplete: () => void
 }) {
-  const supabase = createClient()
   const [items, setItems] = useState<(ProductReturnItem & { localDisposition: string; localWasteReason: string })[]>([])
   const [processing, setProcessing] = useState(false)
 
@@ -677,15 +658,18 @@ function ReviewModal({
     )
   }, [returnRequest])
 
+  const getAdminId = async (): Promise<string | null> => {
+    const user = auth.currentUser
+    if (!user) return null
+    const q = query(collection(db, 'app_users'), where('auth_uid', '==', user.uid))
+    const snap = await getDocs(q)
+    return snap.empty ? null : snap.docs[0].id
+  }
+
   const handleSubmit = async () => {
     setProcessing(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      let adminId = null
-      if (user) {
-        const { data: appUser } = await supabase.from('app_users').select('id').eq('auth_uid', user.id).single()
-        adminId = appUser?.id
-      }
+      const adminId = await getAdminId()
 
       let hasRestock = false
       let hasWaste = false
@@ -695,21 +679,22 @@ function ReviewModal({
         if (isRestock) hasRestock = true
         else hasWaste = true
 
-        await supabase.from('product_return_items').update({
+        await updateDoc(doc(db, 'product_return_items', item.id), {
           disposition: item.localDisposition,
           admin_notes: isRestock ? null : item.localWasteReason,
-        }).eq('id', item.id)
+        })
 
         if (isRestock && item.inventory_item_id) {
-          const { data: invItem } = await supabase.from('production_inventory').select('quantity').eq('id', item.inventory_item_id).single()
-          if (invItem) {
-            await supabase.from('production_inventory').update({
-              quantity: parseFloat(String(invItem.quantity)) + item.quantity_returned
-            }).eq('id', item.inventory_item_id)
+          const invSnap = await getDoc(doc(db, 'production_inventory', item.inventory_item_id))
+          if (invSnap.exists()) {
+            const invData = invSnap.data() as any
+            await updateDoc(doc(db, 'production_inventory', item.inventory_item_id), {
+              quantity: parseFloat(String(invData.quantity)) + item.quantity_returned
+            })
           }
         } else if (!isRestock) {
           // Add to waste ledger
-          await supabase.from('waste_ledger').insert({
+          await addDoc(collection(db, 'waste_ledger'), {
             product_return_item_id: item.id,
             product_name: item.product_name,
             batch_number: item.batch_number,
@@ -721,6 +706,7 @@ function ReviewModal({
             shop_name: returnRequest.shop?.name || null,
             agent_name: returnRequest.agent?.name || null,
             created_by: adminId,
+            created_at: new Date().toISOString(),
           })
         }
       }
@@ -729,11 +715,11 @@ function ReviewModal({
       if (hasRestock && hasWaste) newStatus = 'partial'
       else if (!hasRestock && hasWaste) newStatus = 'approved_waste'
 
-      await supabase.from('product_returns').update({
+      await updateDoc(doc(db, 'product_returns', returnRequest.id), {
         status: newStatus,
         reviewed_by: adminId,
         reviewed_at: new Date().toISOString(),
-      }).eq('id', returnRequest.id)
+      })
 
       onComplete()
     } catch (err) {

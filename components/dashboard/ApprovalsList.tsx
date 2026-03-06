@@ -2,7 +2,8 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { doc, updateDoc, deleteDoc } from 'firebase/firestore'
 
 interface User {
   id: string
@@ -16,47 +17,29 @@ interface User {
 
 export default function ApprovalsList({ users }: { users: User[] }) {
   const router = useRouter()
-  const supabase = createClient()
   const [loading, setLoading] = useState<string | null>(null)
 
   const handleApprove = async (userId: string) => {
     setLoading(userId)
-    
-    const { error } = await supabase
-      .from('app_users')
-      .update({ status: 'active' })
-      .eq('id', userId)
-
-    if (error) {
-      console.error('Approve error:', error)
-      alert('Failed to approve user: ' + error.message)
-    } else {
+    try {
+      await updateDoc(doc(db, 'app_users', userId), { status: 'active' })
       alert('User approved successfully!')
       router.refresh()
+    } catch (error: any) {
+      alert('Failed to approve user: ' + error.message)
     }
-    
     setLoading(null)
   }
 
   const handleReject = async (userId: string) => {
-    if (!confirm('Are you sure you want to reject this user? This will delete their account.')) {
-      return
-    }
-
+    if (!confirm('Are you sure you want to reject this user? This will delete their account.')) return
     setLoading(userId)
-    
-    // Delete from app_users (this will also delete auth user via trigger if set up)
-    const { error } = await supabase
-      .from('app_users')
-      .delete()
-      .eq('id', userId)
-
-    if (error) {
-      alert('Failed to reject user: ' + error.message)
-    } else {
+    try {
+      await deleteDoc(doc(db, 'app_users', userId))
       router.refresh()
+    } catch (error: any) {
+      alert('Failed to reject user: ' + error.message)
     }
-    
     setLoading(null)
   }
 

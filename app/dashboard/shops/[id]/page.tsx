@@ -1,15 +1,16 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, limit, doc, updateDoc, getDoc } from 'firebase/firestore'
 import { useRouter, useParams } from 'next/navigation'
 
 export default function EditShopPage() {
   const router = useRouter()
   const params = useParams()
-  const supabase = createClient()
   const [routes, setRoutes] = useState<any[]>([])
-  
+  const [agentMap, setAgentMap] = useState<Record<string, string>>({})
+
   const [formData, setFormData] = useState({
     name: '',
     owner_name: '',
@@ -23,6 +24,8 @@ export default function EditShopPage() {
     gst_number: '',
     pan_number: '',
     shop_type: 'retail',
+    retail_rate: '',
+    wholesale_rate: '',
     credit_limit: '',
     payment_terms: 'immediate',
     route_id: '',
@@ -37,6 +40,8 @@ export default function EditShopPage() {
   const [loading, setLoading] = useState(false)
   const [loadingData, setLoadingData] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [shopTypeOther, setShopTypeOther] = useState('')
+  const [paymentTermsOther, setPaymentTermsOther] = useState('')
   const [originalRouteId, setOriginalRouteId] = useState('')
   const [pendingBalance, setPendingBalance] = useState(0)
 
@@ -44,67 +49,60 @@ export default function EditShopPage() {
     loadShop()
     fetchRoutes()
     fetchPendingBalance()
-
-    // Set up real-time subscription for delivery updates affecting this shop
-    const channel = supabase
-      .channel('shop-deliveries')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'deliveries',
-          filter: `shop_id=eq.${params.id}`,
-        },
-        () => {
-          // Refetch pending balance when delivery is updated
-          fetchPendingBalance()
-        }
-      )
-      .subscribe()
-
-    return () => {
-      supabase.removeChannel(channel)
-    }
   }, [])
 
   const fetchRoutes = async () => {
-    const { data } = await supabase
-      .from('routes')
-      .select('id, name, area, is_active')
-      .eq('is_active', true)
-      .order('name')
-      .limit(50)
-    setRoutes(data || [])
+    const snap = await getDocs(query(
+      collection(db, 'routes'),
+      where('is_active', '==', true),
+      limit(50)
+    ))
+    const routeList = snap.docs.map(d => ({ id: d.id, ...d.data() })) as any[]
+    routeList.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+    setRoutes(routeList)
+
+    const agentIds = [...new Set(routeList.map((r: any) => r.agent_id).filter(Boolean))]
+    if (agentIds.length > 0) {
+      const agentSnap = await getDocs(query(collection(db, 'app_users'), where('__name__', 'in', agentIds)))
+      const map: Record<string, string> = {}
+      agentSnap.docs.forEach(d => { map[d.id] = (d.data() as any).name || 'Unknown Agent' })
+      setAgentMap(map)
+    }
   }
 
   const fetchPendingBalance = async () => {
-    const { data } = await supabase
-      .from('deliveries')
-      .select('expected_amount, collected_amount')
-      .eq('shop_id', params.id)
-      .in('status', ['delivered', 'partial'])
-    
-    if (data) {
-      const balance = data.reduce((sum, d) => {
-        const expected = d.expected_amount || 0
-        const collected = d.collected_amount || 0
-        return sum + (expected - collected)
-      }, 0)
-      setPendingBalance(balance)
-    }
+    const shopId = params.id as string
+    const snap = await getDocs(query(
+      collection(db, 'deliveries'),
+      where('shop_id', '==', shopId),
+      where('status', 'in', ['delivered', 'partial'])
+    ))
+
+    const salesMinusPayments = snap.docs.reduce((sum, d) => {
+      const data = d.data()
+      const expected = data.expected_amount || 0
+      const collected = data.collected_amount || 0
+      return sum + Math.max(0, expected - collected)
+    }, 0)
+
+    const returnsSnap = await getDocs(query(
+      collection(db, 'product_returns'),
+      where('shop_id', '==', shopId),
+      where('status', '==', 'approved')
+    ))
+    const approvedReturns = returnsSnap.docs.reduce((sum, d) =>
+      sum + parseFloat(String(d.data().total_value || 0)), 0)
+    const balance = Math.max(0, salesMinusPayments - approvedReturns)
+    setPendingBalance(balance)
   }
 
   const loadShop = async () => {
     try {
-      const { data, error } = await supabase
-        .from('shops')
-        .select('*, routes(name, area)')
-        .eq('id', params.id)
-        .single()
+      const shopSnap = await getDoc(doc(db, 'shops', params.id as string))
+      if (!shopSnap.exists()) throw new Error('Shop not found')
 
-      if (error) throw error
-      
+      const data = { id: shopSnap.id, ...shopSnap.data() } as any
+
       setFormData({
         name: data.name || '',
         owner_name: data.owner_name || '',
@@ -117,9 +115,11 @@ export default function EditShopPage() {
         pincode: data.pincode || '',
         gst_number: data.gst_number || '',
         pan_number: data.pan_number || '',
-        shop_type: data.shop_type || 'retail',
+        shop_type: ['retail', 'wholesale', 'distributor'].includes(data.shop_type) ? data.shop_type : (data.shop_type ? 'other' : 'retail'),
+        retail_rate: data.retail_rate != null ? String(data.retail_rate) : '',
+        wholesale_rate: data.wholesale_rate != null ? String(data.wholesale_rate) : '',
         credit_limit: data.credit_limit || '',
-        payment_terms: data.payment_terms || 'immediate',
+        payment_terms: ['immediate', '7_days', '15_days', '30_days'].includes(data.payment_terms) ? data.payment_terms : (data.payment_terms ? 'other' : 'immediate'),
         route_id: data.route_id || '',
         bank_account: data.bank_account || {
           account_number: '',
@@ -130,6 +130,12 @@ export default function EditShopPage() {
         },
       })
       setOriginalRouteId(data.route_id || '')
+      if (data.shop_type && !['retail', 'wholesale', 'distributor'].includes(data.shop_type)) {
+        setShopTypeOther(data.shop_type)
+      }
+      if (data.payment_terms && !['immediate', '7_days', '15_days', '30_days'].includes(data.payment_terms)) {
+        setPaymentTermsOther(data.payment_terms)
+      }
     } catch (err: any) {
       setError(err.message)
     } finally {
@@ -139,41 +145,38 @@ export default function EditShopPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    
+
     // Warn if changing routes
     if (originalRouteId && formData.route_id && originalRouteId !== formData.route_id) {
       if (!confirm('This shop is already assigned to a route. Changing routes will reassign the shop. Continue?')) {
         return
       }
     }
-    
+
     setLoading(true)
     setError(null)
 
     try {
-      const { error: updateError } = await supabase
-        .from('shops')
-        .update({
-          name: formData.name,
-          owner_name: formData.owner_name,
-          contact: formData.contact,
-          alternate_contact: formData.alternate_contact,
-          email: formData.email,
-          address: formData.address,
-          city: formData.city,
-          state: formData.state,
-          pincode: formData.pincode,
-          gst_number: formData.gst_number,
-          pan_number: formData.pan_number,
-          shop_type: formData.shop_type,
-          credit_limit: formData.credit_limit,
-          payment_terms: formData.payment_terms,
-          route_id: formData.route_id || null,
-          bank_account: formData.bank_account,
-        })
-        .eq('id', params.id)
-
-      if (updateError) throw updateError
+      await updateDoc(doc(db, 'shops', params.id as string), {
+        name: formData.name,
+        owner_name: formData.owner_name,
+        contact: formData.contact,
+        alternate_contact: formData.alternate_contact,
+        email: formData.email,
+        address: formData.address,
+        city: formData.city,
+        state: formData.state,
+        pincode: formData.pincode,
+        gst_number: formData.gst_number,
+        pan_number: formData.pan_number,
+        shop_type: formData.shop_type === 'other' ? shopTypeOther : formData.shop_type,
+        retail_rate: formData.retail_rate ? parseFloat(formData.retail_rate) : null,
+        wholesale_rate: formData.wholesale_rate ? parseFloat(formData.wholesale_rate) : null,
+        credit_limit: formData.credit_limit,
+        payment_terms: formData.payment_terms === 'other' ? paymentTermsOther : formData.payment_terms,
+        route_id: formData.route_id || null,
+        bank_account: formData.bank_account,
+      })
 
       router.push('/dashboard/shops')
       router.refresh()
@@ -353,7 +356,42 @@ export default function EditShopPage() {
                 <option value="retail">Retail</option>
                 <option value="wholesale">Wholesale</option>
                 <option value="distributor">Distributor</option>
+                <option value="other">Other</option>
               </select>
+              {formData.shop_type === 'other' && (
+                <input
+                  type="text"
+                  value={shopTypeOther}
+                  onChange={(e) => setShopTypeOther(e.target.value)}
+                  className="w-full mt-2 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  placeholder="Specify shop type"
+                  required
+                />
+              )}
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Retail Rate (₹/unit)</label>
+              <input
+                type="number"
+                step="0.01"
+                value={formData.retail_rate}
+                onChange={(e) => setFormData({ ...formData, retail_rate: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                placeholder="e.g. 28.00"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Wholesale Rate (₹/unit)</label>
+              <input
+                type="number"
+                step="0.01"
+                value={formData.wholesale_rate}
+                onChange={(e) => setFormData({ ...formData, wholesale_rate: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                placeholder="e.g. 25.00"
+              />
             </div>
 
             <div>
@@ -377,11 +415,22 @@ export default function EditShopPage() {
                 <option value="7_days">7 Days</option>
                 <option value="15_days">15 Days</option>
                 <option value="30_days">30 Days</option>
+                <option value="other">Other</option>
               </select>
+              {formData.payment_terms === 'other' && (
+                <input
+                  type="text"
+                  value={paymentTermsOther}
+                  onChange={(e) => setPaymentTermsOther(e.target.value)}
+                  className="w-full mt-2 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  placeholder="Specify payment terms"
+                  required
+                />
+              )}
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Assign to Route</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Assign to Route / Agent</label>
               <select
                 value={formData.route_id}
                 onChange={(e) => setFormData({ ...formData, route_id: e.target.value })}
@@ -390,7 +439,7 @@ export default function EditShopPage() {
                 <option value="">No Route</option>
                 {routes.map(route => (
                   <option key={route.id} value={route.id}>
-                    {route.name} {route.area ? `(${route.area})` : ''}
+                    {route.name}{route.area ? ` (${route.area})` : ''}{agentMap[route.agent_id] ? ` — ${agentMap[route.agent_id]}` : ''}
                   </option>
                 ))}
               </select>

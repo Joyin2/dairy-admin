@@ -1,12 +1,12 @@
 'use client'
 
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, orderBy, doc, getDoc } from 'firebase/firestore'
 import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 
 export default function DispatchDetailPage() {
-  const supabase = createClient()
   const params = useParams()
   const router = useRouter()
   const [allocation, setAllocation] = useState<any>(null)
@@ -21,54 +21,77 @@ export default function DispatchDetailPage() {
     setLoading(true)
     try {
       // Fetch allocation
-      const { data: allocData, error: allocError } = await supabase
-        .from('agent_stock_allocations')
-        .select('*')
-        .eq('id', params.id)
-        .single()
-
-      if (allocError) {
-        console.error('Error fetching allocation:', JSON.stringify(allocError))
+      const allocDoc = await getDoc(doc(db, 'agent_stock_allocations', params.id as string))
+      if (!allocDoc.exists()) {
         setLoading(false)
         return
       }
+      const allocData = { id: allocDoc.id, ...allocDoc.data() } as any
 
-      // Fetch related data separately
-      const [agentRes, creatorRes, itemsRes] = await Promise.all([
-        supabase.from('app_users').select('name, email, phone').eq('id', allocData.agent_id).single(),
+      // Fetch related data in parallel
+      const [agentSnap, creatorSnap, itemsSnap] = await Promise.all([
+        getDoc(doc(db, 'app_users', allocData.agent_id)),
         allocData.created_by
-          ? supabase.from('app_users').select('name').eq('id', allocData.created_by).single()
-          : Promise.resolve({ data: null }),
-        supabase.from('agent_stock_items').select('*').eq('allocation_id', allocData.id),
+          ? getDoc(doc(db, 'app_users', allocData.created_by))
+          : Promise.resolve(null),
+        getDocs(query(
+          collection(db, 'agent_stock_items'),
+          where('allocation_id', '==', allocData.id)
+        )),
       ])
 
       const enrichedAlloc = {
         ...allocData,
-        agent: agentRes.data,
-        created_by_user: creatorRes.data,
-        items: itemsRes.data || [],
+        agent: agentSnap.exists() ? agentSnap.data() : null,
+        created_by_user: creatorSnap?.exists() ? creatorSnap.data() : null,
+        items: itemsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
       }
       setAllocation(enrichedAlloc)
 
       // Fetch sales for all items in this allocation
       if (enrichedAlloc.items.length > 0) {
         const itemIds = enrichedAlloc.items.map((i: any) => i.id)
-        const { data: salesData } = await supabase
-          .from('delivery_sales')
-          .select('*')
-          .in('allocation_item_id', itemIds)
-          .order('created_at', { ascending: false })
-        
+
+        // Firestore 'in' supports up to 30 values; chunk if needed
+        let allSales: any[] = []
+        const chunks: string[][] = []
+        for (let i = 0; i < itemIds.length; i += 30) {
+          chunks.push(itemIds.slice(i, i + 30))
+        }
+        for (const chunk of chunks) {
+          const salesSnap = await getDocs(query(
+            collection(db, 'delivery_sales'),
+            where('allocation_item_id', 'in', chunk),
+            orderBy('created_at', 'desc')
+          ))
+          allSales = allSales.concat(salesSnap.docs.map(d => ({ id: d.id, ...d.data() })))
+        }
+
         // Enrich sales with delivery/shop info
         const enrichedSales = await Promise.all(
-          (salesData || []).map(async (sale: any) => {
+          allSales.map(async (sale: any) => {
             if (!sale.delivery_id) return sale
-            const { data: delivery } = await supabase
-              .from('deliveries')
-              .select('id, status, shop_id, shops(name, city)')
-              .eq('id', sale.delivery_id)
-              .single()
-            return { ...sale, delivery }
+            try {
+              const deliveryDoc = await getDoc(doc(db, 'deliveries', sale.delivery_id))
+              if (!deliveryDoc.exists()) return sale
+              const deliveryData = { id: deliveryDoc.id, ...deliveryDoc.data() } as any
+
+              let shopData = null
+              if (deliveryData.shop_id) {
+                const shopDoc = await getDoc(doc(db, 'shops', deliveryData.shop_id))
+                if (shopDoc.exists()) shopData = shopDoc.data()
+              }
+
+              return {
+                ...sale,
+                delivery: {
+                  ...deliveryData,
+                  shops: shopData,
+                },
+              }
+            } catch {
+              return sale
+            }
           })
         )
         setSales(enrichedSales)
@@ -251,12 +274,10 @@ export default function DispatchDetailPage() {
             </thead>
             <tbody className="divide-y divide-gray-200">
               {sales.map((sale: any) => {
-                const shopName = Array.isArray(sale.delivery?.shops)
-                  ? sale.delivery?.shops[0]?.name
-                  : sale.delivery?.shops?.name
+                const shopName = sale.delivery?.shops?.name || 'Unknown'
                 return (
                   <tr key={sale.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 text-sm text-gray-900">{shopName || 'Unknown'}</td>
+                    <td className="px-6 py-4 text-sm text-gray-900">{shopName}</td>
                     <td className="px-6 py-4 text-sm font-medium text-gray-900">{sale.product_name}</td>
                     <td className="px-6 py-4 text-sm text-blue-600 font-mono">{sale.batch_number}</td>
                     <td className="px-6 py-4 text-sm text-gray-900">

@@ -1,10 +1,10 @@
 'use client'
 
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, orderBy, getDocs } from 'firebase/firestore'
 import { useEffect, useState } from 'react'
 
 export default function InventoryPage() {
-  const supabase = createClient()
   const [productionInventory, setProductionInventory] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
@@ -18,33 +18,30 @@ export default function InventoryPage() {
 
   const loadInventory = async () => {
     setLoading(true)
-    
-    const { data, error } = await supabase
-      .from('production_inventory')
-      .select('*')
-      .order('created_at', { ascending: false })
-    
-    console.log('Production inventory query:', { data, error: error ? JSON.stringify(error) : null })
-    
-    if (error) {
-      console.error('Failed to load production inventory:', error)
-    }
-    
-    setProductionInventory(data || [])
-    
+
+    const q = query(
+      collection(db, 'production_inventory'),
+      orderBy('created_at', 'desc')
+    )
+    const snap = await getDocs(q)
+    const data = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+
+    console.log('Production inventory query:', { count: data.length })
+
+    setProductionInventory(data)
     setLoading(false)
   }
 
   const filteredProductionInventory = productionInventory.filter(item => {
     // Search query filter (searches across all fields)
     if (searchQuery) {
-      const query = searchQuery.toLowerCase()
-      const matchesSearch = 
-        item.product_name?.toLowerCase().includes(query) ||
-        item.batch_number?.toLowerCase().includes(query) ||
-        item.packaging_type?.toLowerCase().includes(query) ||
-        item.package_size?.toLowerCase().includes(query)
-      
+      const q = searchQuery.toLowerCase()
+      const matchesSearch =
+        item.product_name?.toLowerCase().includes(q) ||
+        item.batch_number?.toLowerCase().includes(q) ||
+        item.packaging_type?.toLowerCase().includes(q) ||
+        item.package_size?.toLowerCase().includes(q)
+
       if (!matchesSearch) return false
     }
 

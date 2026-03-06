@@ -1,10 +1,10 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, addDoc, doc, updateDoc } from 'firebase/firestore'
 
 export default function RawMaterialsPage() {
-  const supabase = createClient()
   const [materials, setMaterials] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState(false)
@@ -13,7 +13,10 @@ export default function RawMaterialsPage() {
   const [showPurchaseModal, setShowPurchaseModal] = useState(false)
   const [selectedMaterial, setSelectedMaterial] = useState<any>(null)
   const [error, setError] = useState<string | null>(null)
-  
+
+  const UNIT_OPTIONS = ['kg', 'g', 'L', 'mL', 'pieces', 'bags', 'boxes', 'packets', 'sachets', 'cans']
+  const CATEGORY_OPTIONS = ['Milk', 'Culture', 'Packaging', 'Additives', 'Cleaning', 'Equipment']
+
   const [materialForm, setMaterialForm] = useState({
     name: '',
     sku: '',
@@ -21,7 +24,9 @@ export default function RawMaterialsPage() {
     unit: '',
     cost_per_unit: ''
   })
-  
+  const [unitOther, setUnitOther] = useState('')
+  const [categoryOther, setCategoryOther] = useState('')
+
   const [purchaseForm, setPurchaseForm] = useState({
     quantity: '',
     unit: '',
@@ -37,14 +42,13 @@ export default function RawMaterialsPage() {
 
   const loadMaterials = async () => {
     setLoading(true)
-    
-    const { data: materialsData } = await supabase
-      .from('raw_materials')
-      .select('*')
-      .eq('is_active', true)
-      .order('name')
-    
-    setMaterials(materialsData || [])
+
+    const q = query(collection(db, 'raw_materials'), where('is_active', '==', true))
+    const snap = await getDocs(q)
+    const data = snap.docs.map(d => ({ id: d.id, ...d.data() } as any))
+    data.sort((a: any, b: any) => a.name.localeCompare(b.name))
+
+    setMaterials(data)
     setLoading(false)
   }
 
@@ -53,31 +57,26 @@ export default function RawMaterialsPage() {
       setError('Name and unit are required')
       return
     }
-    
+
     setActionLoading(true)
     setError(null)
-    
+
     try {
-      const { data, error: matError } = await supabase
-        .from('raw_materials')
-        .insert({
-          name: materialForm.name.trim(),
-          sku: materialForm.sku?.trim() || null,
-          category: materialForm.category?.trim() || null,
-          unit: materialForm.unit.trim(),
-          cost_per_unit: materialForm.cost_per_unit ? parseFloat(materialForm.cost_per_unit) : null,
-          current_stock: 0,
-          is_active: true
-        })
-        .select()
-      
-      if (matError) {
-        console.error('Supabase error:', JSON.stringify(matError))
-        throw new Error(matError.message || matError.details || matError.hint || JSON.stringify(matError))
-      }
-      
+      await addDoc(collection(db, 'raw_materials'), {
+        name: materialForm.name.trim(),
+        sku: materialForm.sku?.trim() || null,
+        category: materialForm.category === 'other' ? categoryOther.trim() : (materialForm.category || null),
+        unit: materialForm.unit === 'other' ? unitOther.trim() : materialForm.unit,
+        cost_per_unit: materialForm.cost_per_unit ? parseFloat(materialForm.cost_per_unit) : null,
+        current_stock: 0,
+        is_active: true,
+        created_at: new Date().toISOString(),
+      })
+
       setShowAddModal(false)
       setMaterialForm({ name: '', sku: '', category: '', unit: '', cost_per_unit: '' })
+      setUnitOther('')
+      setCategoryOther('')
       await loadMaterials()
     } catch (err: any) {
       console.error('Error:', String(err))
@@ -88,33 +87,26 @@ export default function RawMaterialsPage() {
   }
 
   const handleAddPurchase = async () => {
-    if (!purchaseForm.quantity || parseFloat(purchaseForm.quantity) <= 0 || !purchaseForm.unit) {
-      setError('Quantity and unit are required')
+    if (!purchaseForm.quantity || parseFloat(purchaseForm.quantity) <= 0) {
+      setError('Quantity is required')
       return
     }
-    
+
     setActionLoading(true)
     setError(null)
-    
+
     try {
       const quantity = parseFloat(purchaseForm.quantity)
-      
+
       // Update current_stock directly on raw_materials
       const newStock = parseFloat(selectedMaterial.current_stock || 0) + quantity
-      
-      const { error: updateError } = await supabase
-        .from('raw_materials')
-        .update({
-          current_stock: newStock,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', selectedMaterial.id)
-      
-      if (updateError) {
-        console.error('Stock update error:', JSON.stringify(updateError))
-        throw new Error(updateError.message || JSON.stringify(updateError))
-      }
-      
+
+      const docRef = doc(db, 'raw_materials', selectedMaterial.id)
+      await updateDoc(docRef, {
+        current_stock: newStock,
+        updated_at: new Date().toISOString()
+      })
+
       setShowPurchaseModal(false)
       setSelectedMaterial(null)
       setPurchaseForm({
@@ -144,13 +136,19 @@ export default function RawMaterialsPage() {
 
   const openEditModal = (material: any) => {
     setSelectedMaterial(material)
+    const storedUnit = material.unit || ''
+    const storedCategory = material.category || ''
+    const isCustomUnit = storedUnit && !UNIT_OPTIONS.includes(storedUnit)
+    const isCustomCategory = storedCategory && !CATEGORY_OPTIONS.includes(storedCategory)
     setMaterialForm({
       name: material.name || '',
       sku: material.sku || '',
-      category: material.category || '',
-      unit: material.unit || '',
+      category: isCustomCategory ? 'other' : storedCategory,
+      unit: isCustomUnit ? 'other' : storedUnit,
       cost_per_unit: material.cost_per_unit ? String(material.cost_per_unit) : ''
     })
+    setUnitOther(isCustomUnit ? storedUnit : '')
+    setCategoryOther(isCustomCategory ? storedCategory : '')
     setError(null)
     setShowEditModal(true)
   }
@@ -165,26 +163,21 @@ export default function RawMaterialsPage() {
     setError(null)
 
     try {
-      const { error: updateError } = await supabase
-        .from('raw_materials')
-        .update({
-          name: materialForm.name.trim(),
-          sku: materialForm.sku?.trim() || null,
-          category: materialForm.category?.trim() || null,
-          unit: materialForm.unit.trim(),
-          cost_per_unit: materialForm.cost_per_unit ? parseFloat(materialForm.cost_per_unit) : null,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', selectedMaterial.id)
-
-      if (updateError) {
-        console.error('Update error:', JSON.stringify(updateError))
-        throw new Error(updateError.message || JSON.stringify(updateError))
-      }
+      const docRef = doc(db, 'raw_materials', selectedMaterial.id)
+      await updateDoc(docRef, {
+        name: materialForm.name.trim(),
+        sku: materialForm.sku?.trim() || null,
+        category: materialForm.category === 'other' ? categoryOther.trim() : (materialForm.category || null),
+        unit: materialForm.unit === 'other' ? unitOther.trim() : materialForm.unit,
+        cost_per_unit: materialForm.cost_per_unit ? parseFloat(materialForm.cost_per_unit) : null,
+        updated_at: new Date().toISOString()
+      })
 
       setShowEditModal(false)
       setSelectedMaterial(null)
       setMaterialForm({ name: '', sku: '', category: '', unit: '', cost_per_unit: '' })
+      setUnitOther('')
+      setCategoryOther('')
       await loadMaterials()
     } catch (err: any) {
       console.error('Error:', String(err))
@@ -298,13 +291,13 @@ export default function RawMaterialsPage() {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 max-w-md w-full">
             <h3 className="text-xl font-bold text-gray-900 mb-4">Add New Material</h3>
-            
+
             {error && (
               <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
                 {error}
               </div>
             )}
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -317,7 +310,7 @@ export default function RawMaterialsPage() {
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">SKU</label>
                 <input
@@ -327,31 +320,53 @@ export default function RawMaterialsPage() {
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Category</label>
-                <input
-                  type="text"
+                <select
                   value={materialForm.category}
                   onChange={(e) => setMaterialForm({ ...materialForm, category: e.target.value })}
-                  placeholder="e.g., Culture, Packaging, Additives"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                />
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+                >
+                  <option value="">Select category...</option>
+                  {CATEGORY_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+                  <option value="other">Other</option>
+                </select>
+                {materialForm.category === 'other' && (
+                  <input
+                    type="text"
+                    value={categoryOther}
+                    onChange={(e) => setCategoryOther(e.target.value)}
+                    placeholder="Specify category"
+                    className="w-full mt-2 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  />
+                )}
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Unit <span className="text-red-500">*</span>
                 </label>
-                <input
-                  type="text"
+                <select
                   value={materialForm.unit}
                   onChange={(e) => setMaterialForm({ ...materialForm, unit: e.target.value })}
-                  placeholder="e.g., kg, g, pieces, L"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                />
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+                >
+                  <option value="">Select unit...</option>
+                  {UNIT_OPTIONS.map(u => <option key={u} value={u}>{u}</option>)}
+                  <option value="other">Other</option>
+                </select>
+                {materialForm.unit === 'other' && (
+                  <input
+                    type="text"
+                    value={unitOther}
+                    onChange={(e) => setUnitOther(e.target.value)}
+                    placeholder="Specify unit"
+                    className="w-full mt-2 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  />
+                )}
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Cost per Unit (optional)
@@ -366,7 +381,7 @@ export default function RawMaterialsPage() {
                 />
               </div>
             </div>
-            
+
             <div className="flex gap-2 mt-6">
               <button
                 onClick={handleAddMaterial}
@@ -379,6 +394,8 @@ export default function RawMaterialsPage() {
                 onClick={() => {
                   setShowAddModal(false)
                   setMaterialForm({ name: '', sku: '', category: '', unit: '', cost_per_unit: '' })
+                  setUnitOther('')
+                  setCategoryOther('')
                   setError(null)
                 }}
                 disabled={actionLoading}
@@ -398,13 +415,13 @@ export default function RawMaterialsPage() {
             <h3 className="text-xl font-bold text-gray-900 mb-4">
               Add Stock: {selectedMaterial.name}
             </h3>
-            
+
             {error && (
               <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
                 {error}
               </div>
             )}
-            
+
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -419,20 +436,15 @@ export default function RawMaterialsPage() {
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
-                
+
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Unit <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={purchaseForm.unit}
-                    onChange={(e) => setPurchaseForm({ ...purchaseForm, unit: e.target.value })}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  />
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Unit</label>
+                  <div className="w-full px-4 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-700 font-medium">
+                    {selectedMaterial?.unit || '—'}
+                  </div>
                 </div>
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Rate per Unit</label>
                 <input
@@ -443,7 +455,7 @@ export default function RawMaterialsPage() {
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Supplier</label>
                 <input
@@ -453,7 +465,7 @@ export default function RawMaterialsPage() {
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Invoice Number</label>
                 <input
@@ -463,7 +475,7 @@ export default function RawMaterialsPage() {
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Purchase Date</label>
                 <input
@@ -474,7 +486,7 @@ export default function RawMaterialsPage() {
                 />
               </div>
             </div>
-            
+
             <div className="flex gap-2 mt-6">
               <button
                 onClick={handleAddPurchase}
@@ -504,13 +516,13 @@ export default function RawMaterialsPage() {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 max-w-md w-full">
             <h3 className="text-xl font-bold text-gray-900 mb-4">Edit Material</h3>
-            
+
             {error && (
               <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
                 {error}
               </div>
             )}
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -523,7 +535,7 @@ export default function RawMaterialsPage() {
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">SKU</label>
                 <input
@@ -533,31 +545,53 @@ export default function RawMaterialsPage() {
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Category</label>
-                <input
-                  type="text"
+                <select
                   value={materialForm.category}
                   onChange={(e) => setMaterialForm({ ...materialForm, category: e.target.value })}
-                  placeholder="e.g., Culture, Packaging, Additives"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                />
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+                >
+                  <option value="">Select category...</option>
+                  {CATEGORY_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
+                  <option value="other">Other</option>
+                </select>
+                {materialForm.category === 'other' && (
+                  <input
+                    type="text"
+                    value={categoryOther}
+                    onChange={(e) => setCategoryOther(e.target.value)}
+                    placeholder="Specify category"
+                    className="w-full mt-2 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  />
+                )}
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Unit <span className="text-red-500">*</span>
                 </label>
-                <input
-                  type="text"
+                <select
                   value={materialForm.unit}
                   onChange={(e) => setMaterialForm({ ...materialForm, unit: e.target.value })}
-                  placeholder="e.g., kg, g, pieces, L"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                />
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+                >
+                  <option value="">Select unit...</option>
+                  {UNIT_OPTIONS.map(u => <option key={u} value={u}>{u}</option>)}
+                  <option value="other">Other</option>
+                </select>
+                {materialForm.unit === 'other' && (
+                  <input
+                    type="text"
+                    value={unitOther}
+                    onChange={(e) => setUnitOther(e.target.value)}
+                    placeholder="Specify unit"
+                    className="w-full mt-2 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  />
+                )}
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Cost per Unit (optional)
@@ -572,7 +606,7 @@ export default function RawMaterialsPage() {
                 />
               </div>
             </div>
-            
+
             <div className="flex gap-2 mt-6">
               <button
                 onClick={handleEditMaterial}
@@ -586,6 +620,8 @@ export default function RawMaterialsPage() {
                   setShowEditModal(false)
                   setSelectedMaterial(null)
                   setMaterialForm({ name: '', sku: '', category: '', unit: '', cost_per_unit: '' })
+                  setUnitOther('')
+                  setCategoryOther('')
                   setError(null)
                 }}
                 disabled={actionLoading}

@@ -9,8 +9,8 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@supabase/ssr": "^0.8.0",
-    "@supabase/supabase-js": "^2.89.0",
+    "firebase": "^12.10.0",
+    "firebase-admin": "^13.7.0",
     "jspdf": "^4.1.0",
     "jspdf-autotable": "^5.0.7",
     "next": "16.1.1",

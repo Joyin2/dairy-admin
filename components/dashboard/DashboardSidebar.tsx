@@ -3,7 +3,8 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { auth } from '@/lib/firebase/client'
+import { signOut } from 'firebase/auth'
 
 interface DashboardSidebarProps {
   user: any
@@ -12,11 +13,11 @@ interface DashboardSidebarProps {
 export default function DashboardSidebar({ user }: DashboardSidebarProps) {
   const pathname = usePathname()
   const router = useRouter()
-  const supabase = createClient()
   const [isCollapsed, setIsCollapsed] = useState(false)
 
   const handleLogout = async () => {
-    await supabase.auth.signOut()
+    await signOut(auth)
+    await fetch('/api/session', { method: 'DELETE' })
     router.push('/login')
     router.refresh()
   }
@@ -54,6 +55,9 @@ export default function DashboardSidebar({ user }: DashboardSidebarProps) {
     
     { name: 'HR & Expenses', section: 'header' },
     { name: 'Employees', href: '/dashboard/employees', icon: '🏢', section: 'hr' },
+
+    { name: 'System', section: 'header' },
+    { name: 'Settings', href: '/dashboard/settings', icon: '⚙️', section: 'system' },
   ]
 
   return (

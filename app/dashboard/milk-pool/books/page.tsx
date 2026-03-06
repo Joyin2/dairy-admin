@@ -1,6 +1,7 @@
 'use client'
 
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, orderBy, limit } from 'firebase/firestore'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
@@ -19,10 +20,9 @@ interface PoolBook {
 
 export default function PoolBooksPage() {
   const router = useRouter()
-  const supabase = createClient()
   const [books, setBooks] = useState<PoolBook[]>([])
   const [loading, setLoading] = useState(true)
-  
+
   // Filters
   const [filters, setFilters] = useState({
     startDate: '',
@@ -39,30 +39,31 @@ export default function PoolBooksPage() {
   const loadBooks = async () => {
     setLoading(true)
     try {
-      let query = supabase
-        .from('milk_pool')
-        .select('*')
-        .eq('status', 'archived')
-        .order('updated_at', { ascending: false })
+      const q = query(
+        collection(db, 'milk_pool'),
+        where('status', '==', 'archived'),
+        orderBy('updated_at', 'desc'),
+        limit(50)
+      )
+      const snap = await getDocs(q)
 
-      const { data, error } = await query.limit(50)
-
-      if (error) throw error
-      
       // Transform data to match interface
-      const transformedData = (data || []).map(pool => ({
-        id: pool.id,
-        original_pool_id: pool.id,
-        pool_name: pool.name,
-        total_milk_liters: pool.total_milk_liters,
-        original_avg_fat: pool.original_avg_fat,
-        remaining_milk_liters: pool.remaining_milk_liters,
-        current_avg_fat: pool.current_avg_fat,
-        pool_created_at: pool.created_at,
-        archived_at: pool.updated_at,
-        snapshot_data: {}
-      }))
-      
+      const transformedData: PoolBook[] = snap.docs.map(d => {
+        const pool = { id: d.id, ...d.data() } as any
+        return {
+          id: pool.id,
+          original_pool_id: pool.id,
+          pool_name: pool.name,
+          total_milk_liters: pool.total_milk_liters,
+          original_avg_fat: pool.original_avg_fat,
+          remaining_milk_liters: pool.remaining_milk_liters,
+          current_avg_fat: pool.current_avg_fat,
+          pool_created_at: pool.created_at,
+          archived_at: pool.updated_at,
+          snapshot_data: {}
+        }
+      })
+
       setBooks(transformedData)
     } catch (err: any) {
       console.error('Failed to load books:', err)
@@ -96,7 +97,7 @@ export default function PoolBooksPage() {
     if (filters.searchBookNumber && !b.pool_name.includes(filters.searchBookNumber)) {
       return false;
     }
-    
+
     // Filter by date
     if (filters.startDate) {
       const bookDate = new Date(b.archived_at).toISOString().split('T')[0];
@@ -106,12 +107,12 @@ export default function PoolBooksPage() {
       const bookDate = new Date(b.archived_at).toISOString().split('T')[0];
       if (bookDate > filters.endDate) return false;
     }
-    
+
     // Filter by milk used
     const milkUsed = b.total_milk_liters - b.remaining_milk_liters;
     if (filters.minMilk && milkUsed < parseFloat(filters.minMilk)) return false;
     if (filters.maxMilk && milkUsed > parseFloat(filters.maxMilk)) return false;
-    
+
     return true;
   })
 
@@ -215,7 +216,7 @@ export default function PoolBooksPage() {
             Closed Pool Books ({filteredBooks.length})
           </h2>
         </div>
-        
+
         {filteredBooks.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">

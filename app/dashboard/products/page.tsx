@@ -1,13 +1,13 @@
 'use client'
 
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, getDocs, doc, deleteDoc } from 'firebase/firestore'
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 export default function ProductsPage() {
   const router = useRouter()
-  const supabase = createClient()
   const [products, setProducts] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [deleting, setDeleting] = useState<string | null>(null)
@@ -17,19 +17,20 @@ export default function ProductsPage() {
   }, [])
 
   const loadProducts = async () => {
-    const { data } = await supabase.from('products').select('*').order('created_at', { ascending: false })
-    setProducts(data || [])
+    const snap = await getDocs(query(collection(db, 'products')))
+    const items = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as any[]
+    items.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+    setProducts(items)
     setLoading(false)
   }
 
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`Are you sure you want to delete "${name}"?`)) return
-    
+
     setDeleting(id)
     try {
-      const { error } = await supabase.from('products').delete().eq('id', id)
-      if (error) throw error
-      setProducts(products.filter(product => product.id !== id))
+      await deleteDoc(doc(db, 'products', id))
+      setProducts(products.filter((product) => product.id !== id))
     } catch (err: any) {
       alert('Failed to delete: ' + err.message)
     } finally {

@@ -1,13 +1,11 @@
 'use client'
 
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, orderBy, limit, doc, deleteDoc } from 'firebase/firestore'
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
 
 export default function ShopsPage() {
-  const router = useRouter()
-  const supabase = createClient()
   const [shops, setShops] = useState<any[]>([])
   const [routes, setRoutes] = useState<any[]>([])
   const [selectedRoute, setSelectedRoute] = useState<string>('')
@@ -15,7 +13,6 @@ export default function ShopsPage() {
   const [deleting, setDeleting] = useState<string | null>(null)
 
   useEffect(() => {
-    loadShops()
     loadRoutes()
   }, [])
 
@@ -24,38 +21,72 @@ export default function ShopsPage() {
   }, [selectedRoute])
 
   const loadRoutes = async () => {
-    const { data } = await supabase
-      .from('routes')
-      .select('id, name, area, is_active')
-      .eq('is_active', true)
-      .order('name')
-      .limit(50)
-    setRoutes(data || [])
+    const q = query(
+      collection(db, 'routes'),
+      where('is_active', '==', true),
+      orderBy('name'),
+      limit(50)
+    )
+    const snap = await getDocs(q)
+    setRoutes(snap.docs.map(d => ({ id: d.id, ...d.data() })))
   }
 
   const loadShops = async () => {
     setLoading(true)
-    let query = supabase
-      .from('shops')
-      .select('*, routes(name, area, is_active), created_by_user:app_users!shops_created_by_fkey(name, email)')
-      .order('created_at', { ascending: false })
-    
+    let q
     if (selectedRoute) {
-      query = query.eq('route_id', selectedRoute)
+      q = query(
+        collection(db, 'shops'),
+        where('route_id', '==', selectedRoute)
+      )
+    } else {
+      q = query(collection(db, 'shops'))
     }
-    
-    const { data } = await query
-    setShops(data || [])
+
+    const snap = await getDocs(q)
+    const rawShops = snap.docs.map(d => ({ id: d.id, ...d.data() })) as any[]
+    rawShops.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+
+    // Fetch related route and created_by_user for each shop
+    const shopsWithJoins = await Promise.all(rawShops.map(async (shop) => {
+      if (shop.route_id) {
+        try {
+          const routeSnap = await getDocs(
+            query(collection(db, 'routes'), where('__name__', '==', shop.route_id))
+          )
+          shop.routes = routeSnap.empty ? null : { id: routeSnap.docs[0].id, ...routeSnap.docs[0].data() }
+        } catch {
+          shop.routes = null
+        }
+      } else {
+        shop.routes = null
+      }
+
+      if (shop.created_by) {
+        try {
+          const userQ = query(collection(db, 'app_users'), where('__name__', '==', shop.created_by))
+          const userSnap = await getDocs(userQ)
+          shop.created_by_user = userSnap.empty ? null : { id: userSnap.docs[0].id, ...userSnap.docs[0].data() }
+        } catch {
+          shop.created_by_user = null
+        }
+      } else {
+        shop.created_by_user = null
+      }
+
+      return shop
+    }))
+
+    setShops(shopsWithJoins)
     setLoading(false)
   }
 
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`Are you sure you want to delete "${name}"?`)) return
-    
+
     setDeleting(id)
     try {
-      const { error } = await supabase.from('shops').delete().eq('id', id)
-      if (error) throw error
+      await deleteDoc(doc(db, 'shops', id))
       setShops(shops.filter(shop => shop.id !== id))
     } catch (err: any) {
       alert('Failed to delete: ' + err.message)
@@ -148,8 +179,8 @@ export default function ShopsPage() {
                         shop.status === 'rejected' ? 'bg-red-100 text-red-800' :
                         'bg-gray-100 text-gray-800'
                       }`}>
-                        {shop.status === 'pending_approval' ? 'Pending' : 
-                         shop.status === 'approved' ? 'Approved' : 
+                        {shop.status === 'pending_approval' ? 'Pending' :
+                         shop.status === 'approved' ? 'Approved' :
                          shop.status === 'rejected' ? 'Rejected' : 'Unknown'}
                       </span>
                     </td>

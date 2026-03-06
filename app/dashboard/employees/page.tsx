@@ -1,7 +1,8 @@
 'use client'
 
 import React, { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { db, auth } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, orderBy, doc, addDoc, updateDoc } from 'firebase/firestore'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import * as XLSX from 'xlsx'
@@ -85,7 +86,6 @@ type TabId = 'dashboard' | 'employees' | 'salary' | 'misc-expenses' | 'professio
 
 // ==================== MAIN PAGE ====================
 export default function EmployeesPage() {
-  const supabase = createClient()
   const [activeTab, setActiveTab] = useState<TabId>('dashboard')
   const [loading, setLoading] = useState(true)
 
@@ -98,18 +98,18 @@ export default function EmployeesPage() {
   const fetchData = async () => {
     setLoading(true)
     try {
-      const [empRes, salRes, miscRes, profRes, profPayRes] = await Promise.all([
-        supabase.from('employees').select('*').order('created_at', { ascending: false }),
-        supabase.from('salary_payments').select('*').order('created_at', { ascending: false }),
-        supabase.from('misc_expenses').select('*').order('expense_date', { ascending: false }),
-        supabase.from('professionals').select('*').order('created_at', { ascending: false }),
-        supabase.from('professional_payments').select('*').order('payment_date', { ascending: false }),
+      const [empSnap, salSnap, miscSnap, profSnap, profPaySnap] = await Promise.all([
+        getDocs(query(collection(db, 'employees'), orderBy('created_at', 'desc'))),
+        getDocs(query(collection(db, 'salary_payments'), orderBy('created_at', 'desc'))),
+        getDocs(query(collection(db, 'misc_expenses'), orderBy('expense_date', 'desc'))),
+        getDocs(query(collection(db, 'professionals'), orderBy('created_at', 'desc'))),
+        getDocs(query(collection(db, 'professional_payments'), orderBy('payment_date', 'desc'))),
       ])
-      setEmployees(empRes.data || [])
-      setSalaryPayments(salRes.data || [])
-      setMiscExpenses(miscRes.data || [])
-      setProfessionals(profRes.data || [])
-      setProfPayments(profPayRes.data || [])
+      setEmployees(empSnap.docs.map(d => ({ id: d.id, ...d.data() })) as Employee[])
+      setSalaryPayments(salSnap.docs.map(d => ({ id: d.id, ...d.data() })) as SalaryPayment[])
+      setMiscExpenses(miscSnap.docs.map(d => ({ id: d.id, ...d.data() })) as MiscExpense[])
+      setProfessionals(profSnap.docs.map(d => ({ id: d.id, ...d.data() })) as Professional[])
+      setProfPayments(profPaySnap.docs.map(d => ({ id: d.id, ...d.data() })) as ProfPayment[])
     } catch (err) {
       console.error('Error fetching data:', err)
     }
@@ -259,7 +259,6 @@ function HRDashboardView({ employees, salaryPayments, miscExpenses, professional
 
 // ==================== EMPLOYEES VIEW ====================
 function EmployeesView({ employees, onRefresh }: { employees: Employee[]; onRefresh: () => void }) {
-  const supabase = createClient()
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -297,13 +296,15 @@ function EmployeesView({ employees, onRefresh }: { employees: Employee[]; onRefr
         address: form.address || null, joining_date: form.joining_date || null,
         salary_type: form.salary_type, basic_salary: parseFloat(form.basic_salary) || 0,
         incentive_structure: form.incentive_structure || null, status: form.status,
+        updated_at: new Date().toISOString(),
       }
       if (editingId) {
-        const { error } = await supabase.from('employees').update(payload).eq('id', editingId)
-        if (error) throw error
+        await updateDoc(doc(db, 'employees', editingId), payload)
       } else {
-        const { error } = await supabase.from('employees').insert(payload)
-        if (error) throw error
+        await addDoc(collection(db, 'employees'), {
+          ...payload,
+          created_at: new Date().toISOString(),
+        })
       }
       resetForm()
       setShowForm(false)
@@ -451,7 +452,6 @@ function EmployeesView({ employees, onRefresh }: { employees: Employee[]; onRefr
 function SalaryView({ employees, salaryPayments, onRefresh }: {
   employees: Employee[]; salaryPayments: SalaryPayment[]; onRefresh: () => void
 }) {
-  const supabase = createClient()
   const [selectedEmp, setSelectedEmp] = useState<string>('')
   const [showPayForm, setShowPayForm] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -495,7 +495,7 @@ function SalaryView({ employees, salaryPayments, onRefresh }: {
     setSubmitting(true)
     try {
       const status = amtPaid >= netPayable ? 'paid' : amtPaid > 0 ? 'partial' : 'pending'
-      const { error } = await supabase.from('salary_payments').insert({
+      await addDoc(collection(db, 'salary_payments'), {
         employee_id: selectedEmp,
         month: payForm.month,
         basic_amount: parseFloat(payForm.basic_amount) || 0,
@@ -510,8 +510,8 @@ function SalaryView({ employees, salaryPayments, onRefresh }: {
         payment_mode: payForm.payment_mode,
         notes: payForm.notes || null,
         status,
+        created_at: new Date().toISOString(),
       })
-      if (error) throw error
       alert('Salary payment recorded!')
       setShowPayForm(false)
       setPayForm({ month: currentMonth, basic_amount: String(emp?.basic_salary || 0), incentive_amount: '', overtime_amount: '',
@@ -708,7 +708,6 @@ function SalaryView({ employees, salaryPayments, onRefresh }: {
 
 // ==================== MISC EXPENSES VIEW ====================
 function MiscExpensesView({ expenses, onRefresh }: { expenses: MiscExpense[]; onRefresh: () => void }) {
-  const supabase = createClient()
   const [showForm, setShowForm] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [filterCat, setFilterCat] = useState('')
@@ -732,19 +731,20 @@ function MiscExpensesView({ expenses, onRefresh }: { expenses: MiscExpense[]; on
     if (!form.amount || parseFloat(form.amount) <= 0) return alert('Enter a valid amount')
     setSubmitting(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
       let adminId = null
-      if (user) {
-        const { data: appUser } = await supabase.from('app_users').select('id').eq('auth_uid', user.id).single()
-        adminId = appUser?.id
+      const uid = auth.currentUser?.uid
+      if (uid) {
+        const usersQ = query(collection(db, 'app_users'), where('auth_uid', '==', uid))
+        const usersSnap = await getDocs(usersQ)
+        if (!usersSnap.empty) adminId = usersSnap.docs[0].id
       }
-      const { error } = await supabase.from('misc_expenses').insert({
+      await addDoc(collection(db, 'misc_expenses'), {
         category: form.category, description: form.description || null,
         amount: parseFloat(form.amount), expense_date: form.expense_date,
         paid_to: form.paid_to || null, payment_mode: form.payment_mode,
         notes: form.notes || null, created_by: adminId,
+        created_at: new Date().toISOString(),
       })
-      if (error) throw error
       alert('Expense recorded!')
       setShowForm(false)
       setForm({ category: 'others', description: '', amount: '', expense_date: new Date().toISOString().split('T')[0], paid_to: '', payment_mode: 'cash', notes: '' })
@@ -884,7 +884,6 @@ function MiscExpensesView({ expenses, onRefresh }: { expenses: MiscExpense[]; on
 function ProfessionalServicesView({ professionals, profPayments, onRefresh }: {
   professionals: Professional[]; profPayments: ProfPayment[]; onRefresh: () => void
 }) {
-  const supabase = createClient()
   const [showProfForm, setShowProfForm] = useState(false)
   const [showPayForm, setShowPayForm] = useState(false)
   const [selectedProf, setSelectedProf] = useState<string>('')
@@ -903,13 +902,13 @@ function ProfessionalServicesView({ professionals, profPayments, onRefresh }: {
     if (!profForm.name.trim() || !profForm.service_type.trim()) return alert('Name and service type are required')
     setSubmitting(true)
     try {
-      const { error } = await supabase.from('professionals').insert({
+      await addDoc(collection(db, 'professionals'), {
         name: profForm.name.trim(), service_type: profForm.service_type.trim(),
         contract_type: profForm.contract_type, agreed_fee: parseFloat(profForm.agreed_fee) || 0,
         contact_phone: profForm.contact_phone || null, contact_email: profForm.contact_email || null,
         status: profForm.status,
+        created_at: new Date().toISOString(),
       })
-      if (error) throw error
       alert('Professional added!')
       setShowProfForm(false)
       setProfForm({ name: '', service_type: '', contract_type: 'monthly', agreed_fee: '', contact_phone: '', contact_email: '', status: 'active' })
@@ -923,23 +922,24 @@ function ProfessionalServicesView({ professionals, profPayments, onRefresh }: {
     if (!selectedProf || !payForm.amount || parseFloat(payForm.amount) <= 0) return alert('Select professional and enter amount')
     setSubmitting(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
       let adminId = null
-      if (user) {
-        const { data: appUser } = await supabase.from('app_users').select('id').eq('auth_uid', user.id).single()
-        adminId = appUser?.id
+      const uid = auth.currentUser?.uid
+      if (uid) {
+        const usersQ = query(collection(db, 'app_users'), where('auth_uid', '==', uid))
+        const usersSnap = await getDocs(usersQ)
+        if (!usersSnap.empty) adminId = usersSnap.docs[0].id
       }
       const amt = parseFloat(payForm.amount) || 0
       const tds = parseFloat(payForm.tds_deduction) || 0
-      const { error } = await supabase.from('professional_payments').insert({
+      await addDoc(collection(db, 'professional_payments'), {
         professional_id: selectedProf,
         service_description: payForm.service_description || null,
         invoice_number: payForm.invoice_number || null,
         amount: amt, tds_deduction: tds, net_amount: amt - tds,
         payment_date: payForm.payment_date, payment_mode: payForm.payment_mode,
         notes: payForm.notes || null, created_by: adminId,
+        created_at: new Date().toISOString(),
       })
-      if (error) throw error
       alert('Payment recorded!')
       setShowPayForm(false)
       setPayForm({ service_description: '', invoice_number: '', amount: '', tds_deduction: '', payment_date: new Date().toISOString().split('T')[0], payment_mode: 'bank', notes: '' })

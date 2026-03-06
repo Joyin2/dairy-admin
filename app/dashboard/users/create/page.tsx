@@ -1,13 +1,13 @@
 'use client'
 
 import { useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, addDoc } from 'firebase/firestore'
 import { useRouter } from 'next/navigation'
 
 export default function CreateUserPage() {
   const router = useRouter()
-  const supabase = createClient()
-  
+
   const [formData, setFormData] = useState({
     email: '',
     password: '',
@@ -25,32 +25,31 @@ export default function CreateUserPage() {
     setError(null)
 
     try {
-      // Create auth user
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: formData.email,
-        password: formData.password,
+      // Create Firebase Auth user via admin API (to avoid signing in as new user)
+      const response = await fetch('/api/create-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: formData.email, password: formData.password, role: formData.role }),
       })
 
-      if (authError) throw authError
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Failed to create auth user')
 
-      if (authData.user) {
-        // Create app_users entry
-        const { error: dbError } = await supabase
-          .from('app_users')
-          .insert({
-            auth_uid: authData.user.id,
-            email: formData.email,
-            name: formData.name,
-            phone: formData.phone,
-            role: formData.role,
-            status: formData.status,
-          })
+      const authUid = data.uid
 
-        if (dbError) throw dbError
+      // Create app_users entry in Firestore
+      await addDoc(collection(db, 'app_users'), {
+        auth_uid: authUid,
+        email: formData.email,
+        name: formData.name,
+        phone: formData.phone,
+        role: formData.role,
+        status: formData.status,
+        created_at: new Date().toISOString(),
+      })
 
-        router.push('/dashboard/users')
-        router.refresh()
-      }
+      router.push('/dashboard/users')
+      router.refresh()
     } catch (err: any) {
       setError(err.message || 'Failed to create user')
     } finally {

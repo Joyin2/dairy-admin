@@ -1,6 +1,7 @@
 'use client'
 
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, orderBy } from 'firebase/firestore'
 import { useEffect, useState } from 'react'
 
 interface DirectSale {
@@ -69,7 +70,6 @@ interface AgentPerformance {
 }
 
 export default function DirectSalesPage() {
-  const supabase = createClient()
   const [activeTab, setActiveTab] = useState<'ledger' | 'roadwise' | 'customers'>('ledger')
   const [sales, setSales] = useState<DirectSale[]>([])
   const [customers, setCustomers] = useState<DirectCustomer[]>([])
@@ -99,86 +99,95 @@ export default function DirectSalesPage() {
   }, [dateFilter, agentFilter, roadFilter])
 
   const fetchAgents = async () => {
-    const { data } = await supabase
-      .from('app_users')
-      .select('id, name')
-      .eq('role', 'delivery_agent')
-      .eq('status', 'active')
-      .order('name')
-    setAgents(data || [])
+    const q = query(
+      collection(db, 'app_users'),
+      where('role', '==', 'delivery_agent'),
+      where('status', '==', 'active'),
+      orderBy('name')
+    )
+    const snap = await getDocs(q)
+    setAgents(snap.docs.map(d => ({ id: d.id, name: d.data().name })))
   }
 
   const fetchData = async () => {
     setLoading(true)
     try {
-      // Fetch direct sales
-      let query = supabase
-        .from('direct_sales')
-        .select('*')
-        .order('created_at', { ascending: false })
+      // Fetch direct sales with filters
+      let salesQuery = query(
+        collection(db, 'direct_sales'),
+        orderBy('created_at', 'desc')
+      )
 
-      if (dateFilter) query = query.eq('sale_date', dateFilter)
-      if (agentFilter) query = query.eq('agent_id', agentFilter)
-      if (roadFilter) query = query.ilike('road_area', `%${roadFilter}%`)
+      // Apply filters: Firestore can only filter by equality/range, no ilike
+      // We apply date and agent filters server-side; road filter client-side
+      const constraints: any[] = [orderBy('created_at', 'desc')]
+      if (dateFilter) constraints.push(where('sale_date', '==', dateFilter))
+      if (agentFilter) constraints.push(where('agent_id', '==', agentFilter))
 
-      const { data: salesData } = await query
+      salesQuery = query(collection(db, 'direct_sales'), ...constraints)
+      const salesSnap = await getDocs(salesQuery)
+      let salesData: any[] = salesSnap.docs.map(d => ({ id: d.id, ...d.data() }))
 
-      // Enrich with agent names, route names, and items
-      const enriched: DirectSale[] = []
+      // Client-side road filter (ilike equivalent)
+      if (roadFilter) {
+        const lowerRoad = roadFilter.toLowerCase()
+        salesData = salesData.filter(s => s.road_area?.toLowerCase().includes(lowerRoad))
+      }
+
+      // Collect unique agent/route IDs
       const agentIds = new Set<string>()
       const routeIds = new Set<string>()
-
-      for (const sale of (salesData || [])) {
-        agentIds.add(sale.agent_id)
+      for (const sale of salesData) {
+        if (sale.agent_id) agentIds.add(sale.agent_id)
         if (sale.route_id) routeIds.add(sale.route_id)
       }
 
       // Fetch agent names
       const agentMap: Record<string, string> = {}
       if (agentIds.size > 0) {
-        const { data: agentsData } = await supabase
-          .from('app_users')
-          .select('id, name')
-          .in('id', Array.from(agentIds))
-        for (const a of (agentsData || [])) {
-          agentMap[a.id] = a.name || 'Unknown'
+        const agentQ = query(collection(db, 'app_users'), where('__name__', 'in', Array.from(agentIds)))
+        const agentSnap = await getDocs(agentQ)
+        for (const d of agentSnap.docs) {
+          agentMap[d.id] = d.data().name || 'Unknown'
         }
       }
 
       // Fetch route names
       const routeMap: Record<string, string> = {}
       if (routeIds.size > 0) {
-        const { data: routesData } = await supabase
-          .from('routes')
-          .select('id, name')
-          .in('id', Array.from(routeIds))
-        for (const r of (routesData || [])) {
-          routeMap[r.id] = r.name || 'Unknown'
+        const routeQ = query(collection(db, 'routes'), where('__name__', 'in', Array.from(routeIds)))
+        const routeSnap = await getDocs(routeQ)
+        for (const d of routeSnap.docs) {
+          routeMap[d.id] = d.data().name || 'Unknown'
         }
       }
 
-      // Fetch all items
-      const saleIds = (salesData || []).map((s: any) => s.id)
+      // Fetch all items for these sales
+      const saleIds = salesData.map(s => s.id)
       let itemsMap: Record<string, DirectSaleItem[]> = {}
       if (saleIds.length > 0) {
-        const { data: itemsData } = await supabase
-          .from('direct_sale_items')
-          .select('*')
-          .in('direct_sale_id', saleIds)
-        for (const item of (itemsData || [])) {
-          if (!itemsMap[item.direct_sale_id]) itemsMap[item.direct_sale_id] = []
-          itemsMap[item.direct_sale_id].push(item)
+        // Firestore 'in' supports up to 30 items; chunk if needed
+        const chunks: string[][] = []
+        for (let i = 0; i < saleIds.length; i += 30) {
+          chunks.push(saleIds.slice(i, i + 30))
+        }
+        for (const chunk of chunks) {
+          const itemsQ = query(collection(db, 'direct_sale_items'), where('direct_sale_id', 'in', chunk))
+          const itemsSnap = await getDocs(itemsQ)
+          for (const d of itemsSnap.docs) {
+            const item = { id: d.id, ...d.data() } as any
+            if (!itemsMap[item.direct_sale_id]) itemsMap[item.direct_sale_id] = []
+            itemsMap[item.direct_sale_id].push(item)
+          }
         }
       }
 
-      for (const sale of (salesData || [])) {
-        enriched.push({
-          ...sale,
-          agent_name: agentMap[sale.agent_id] || 'Unknown',
-          route_name: sale.route_id ? routeMap[sale.route_id] || '-' : '-',
-          items: itemsMap[sale.id] || [],
-        })
-      }
+      const enriched: DirectSale[] = salesData.map(sale => ({
+        ...sale,
+        agent_name: agentMap[sale.agent_id] || 'Unknown',
+        route_name: sale.route_id ? routeMap[sale.route_id] || '-' : '-',
+        items: itemsMap[sale.id] || [],
+      }))
 
       setSales(enriched)
 
@@ -230,11 +239,10 @@ export default function DirectSalesPage() {
       setAgentPerformance(Object.values(agentPerfMap).sort((a, b) => b.totalAmount - a.totalAmount))
 
       // Fetch customers
-      const { data: customersData } = await supabase
-        .from('direct_customers')
-        .select('*')
-        .order('created_at', { ascending: false })
-      setCustomers(customersData || [])
+      const customersSnap = await getDocs(
+        query(collection(db, 'direct_customers'), orderBy('created_at', 'desc'))
+      )
+      setCustomers(customersSnap.docs.map(d => ({ id: d.id, ...d.data() })) as DirectCustomer[])
 
     } catch (err: any) {
       console.error('Error fetching direct sales:', err)

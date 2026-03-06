@@ -1,6 +1,7 @@
 'use client'
 
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, orderBy, doc, getDoc } from 'firebase/firestore'
 import { useEffect, useState } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 
@@ -32,7 +33,6 @@ interface BookDetails {
 export default function BookDetailsPage() {
   const router = useRouter()
   const params = useParams()
-  const supabase = createClient()
   const [book, setBook] = useState<BookDetails | null>(null)
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<'summary' | 'usage' | 'collections' | 'inventory'>('summary')
@@ -46,29 +46,88 @@ export default function BookDetailsPage() {
   const loadBookDetails = async (bookId: string) => {
     setLoading(true)
     try {
-      const { data, error } = await supabase
-        .from('milk_pool')
-        .select('*')
-        .eq('id', bookId)
-        .eq('status', 'archived')
-        .single()
+      // Fetch the milk_pool document
+      const poolDoc = await getDoc(doc(db, 'milk_pool', bookId))
+      if (!poolDoc.exists()) throw new Error('Book not found')
+      const data = { id: poolDoc.id, ...poolDoc.data() } as any
+      if (data.status !== 'archived') throw new Error('Book not found')
 
-      if (error) throw error
-      if (!data) throw new Error('Book not found')
+      // Fetch usage history and pool collections in parallel
+      const [usageSnap, poolCollSnap] = await Promise.all([
+        getDocs(query(
+          collection(db, 'milk_usage_log'),
+          where('milk_pool_id', '==', bookId),
+          orderBy('used_at')
+        )),
+        getDocs(query(
+          collection(db, 'pool_collections'),
+          where('milk_pool_id', '==', bookId),
+          orderBy('added_at')
+        )),
+      ])
 
-      // Get usage history
-      const { data: usageHistory } = await supabase
-        .from('milk_usage_log')
-        .select('*, app_users(name)')
-        .eq('milk_pool_id', bookId)
-        .order('used_at')
+      // Enrich usage history with user names
+      const usageHistoryRaw = usageSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[]
+      const userIds = [...new Set(usageHistoryRaw.map((u: any) => u.operator_id).filter(Boolean))]
+      const userMap: Record<string, string> = {}
+      if (userIds.length > 0) {
+        await Promise.all(
+          userIds.map(async (uid) => {
+            try {
+              const userDoc = await getDoc(doc(db, 'app_users', uid))
+              if (userDoc.exists()) {
+                userMap[uid] = (userDoc.data() as any).name || 'Unknown'
+              }
+            } catch {
+              // ignore
+            }
+          })
+        )
+      }
+      const usageHistory = usageHistoryRaw.map((u: any) => ({
+        ...u,
+        user_name: u.operator_id ? (userMap[u.operator_id] || 'N/A') : 'N/A',
+      }))
 
-      // Get collections history
-      const { data: collectionsHistory } = await supabase
-        .from('pool_collections')
-        .select('*, milk_collections(*, suppliers(name))')
-        .eq('milk_pool_id', bookId)
-        .order('added_at')
+      // Enrich pool collections with milk collection and supplier data
+      const poolCollRaw = poolCollSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[]
+      const collectionIds = [...new Set(poolCollRaw.map((pc: any) => pc.milk_collection_id).filter(Boolean))]
+      const collMap: Record<string, any> = {}
+      if (collectionIds.length > 0) {
+        await Promise.all(
+          collectionIds.map(async (cid) => {
+            try {
+              const collDoc = await getDoc(doc(db, 'milk_collections', cid))
+              if (collDoc.exists()) {
+                const collData = { id: collDoc.id, ...collDoc.data() } as any
+                // Fetch supplier
+                let supplierName = null
+                if (collData.supplier_id) {
+                  try {
+                    const suppDoc = await getDoc(doc(db, 'suppliers', collData.supplier_id))
+                    if (suppDoc.exists()) supplierName = (suppDoc.data() as any).name || null
+                  } catch {
+                    // ignore
+                  }
+                }
+                collMap[cid] = { ...collData, supplier_name: supplierName }
+              }
+            } catch {
+              // ignore
+            }
+          })
+        )
+      }
+      const collectionsHistory = poolCollRaw.map((pc: any) => {
+        const coll = pc.milk_collection_id ? collMap[pc.milk_collection_id] : null
+        return {
+          ...pc,
+          qty_liters: coll?.qty_liters ?? pc.qty_liters,
+          fat: coll?.fat ?? pc.fat,
+          snf: coll?.snf ?? pc.snf,
+          supplier_name: coll?.supplier_name || null,
+        }
+      })
 
       // Transform to match interface
       const transformedBook: BookDetails = {
@@ -84,12 +143,12 @@ export default function BookDetailsPage() {
         closing_avg_fat: data.current_avg_fat,
         total_milk_used: data.total_milk_liters - data.remaining_milk_liters,
         total_fat_used: data.total_fat_units - data.remaining_fat_units,
-        total_collections_count: collectionsHistory?.length || 0,
-        total_usage_count: usageHistory?.length || 0,
+        total_collections_count: collectionsHistory.length,
+        total_usage_count: usageHistory.length,
         total_inventory_items_count: 0,
-        usage_history_json: usageHistory || [],
+        usage_history_json: usageHistory,
         inventory_history_json: [],
-        collections_history_json: collectionsHistory || [],
+        collections_history_json: collectionsHistory,
         created_at: data.created_at,
         closed_at: data.updated_at,
         closed_by: data.created_by,

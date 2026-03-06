@@ -1,11 +1,11 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, orderBy, doc, getDoc } from 'firebase/firestore'
 import Link from 'next/link'
 
 export default function ProductionPage() {
-  const supabase = createClient()
   const [productions, setProductions] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
@@ -16,17 +16,41 @@ export default function ProductionPage() {
 
   const loadProductions = async () => {
     setLoading(true)
-    let query = supabase
-      .from('production')
-      .select('*, app_users(name)')
-      .order('created_at', { ascending: false })
 
+    let q
     if (filter !== 'all') {
-      query = query.eq('status', filter)
+      q = query(
+        collection(db, 'production'),
+        where('status', '==', filter),
+        orderBy('created_at', 'desc')
+      )
+    } else {
+      q = query(
+        collection(db, 'production'),
+        orderBy('created_at', 'desc')
+      )
     }
 
-    const { data } = await query
-    setProductions(data || [])
+    const snap = await getDocs(q)
+    const rawData = snap.docs.map(d => ({ id: d.id, ...d.data() })) as any[]
+
+    // Fetch app_users join for each production record
+    const dataWithUsers = await Promise.all(rawData.map(async (prod) => {
+      if (prod.created_by || prod.user_id) {
+        const userId = prod.created_by || prod.user_id
+        try {
+          const userSnap = await getDoc(doc(db, 'app_users', userId))
+          prod.app_users = userSnap.exists() ? { id: userSnap.id, ...userSnap.data() } : null
+        } catch {
+          prod.app_users = null
+        }
+      } else {
+        prod.app_users = null
+      }
+      return prod
+    }))
+
+    setProductions(dataWithUsers)
     setLoading(false)
   }
 

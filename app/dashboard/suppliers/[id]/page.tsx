@@ -1,14 +1,14 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { doc, updateDoc, getDoc } from 'firebase/firestore'
 import { useRouter, useParams } from 'next/navigation'
 
 export default function EditSupplierPage() {
   const router = useRouter()
   const params = useParams()
-  const supabase = createClient()
-  
+
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
@@ -36,6 +36,7 @@ export default function EditSupplierPage() {
   const [loading, setLoading] = useState(false)
   const [loadingData, setLoadingData] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [paymentTermsOther, setPaymentTermsOther] = useState('')
 
   useEffect(() => {
     loadSupplier()
@@ -43,14 +44,11 @@ export default function EditSupplierPage() {
 
   const loadSupplier = async () => {
     try {
-      const { data, error } = await supabase
-        .from('suppliers')
-        .select('*')
-        .eq('id', params.id)
-        .single()
+      const supplierSnap = await getDoc(doc(db, 'suppliers', params.id as string))
+      if (!supplierSnap.exists()) throw new Error('Supplier not found')
 
-      if (error) throw error
-      
+      const data = { id: supplierSnap.id, ...supplierSnap.data() } as any
+
       setFormData({
         name: data.name || '',
         phone: data.phone || '',
@@ -64,7 +62,7 @@ export default function EditSupplierPage() {
         contact_person: data.contact_person || '',
         alternate_phone: data.alternate_phone || '',
         supply_capacity: data.supply_capacity || '',
-        payment_terms: data.payment_terms || 'immediate',
+        payment_terms: ['immediate', '7_days', '15_days', '30_days'].includes(data.payment_terms) ? data.payment_terms : (data.payment_terms ? 'other' : 'immediate'),
         kyc_status: data.kyc_status || 'pending',
         auto_receipt_pref: data.auto_receipt_pref ?? true,
         bank_account: data.bank_account || {
@@ -75,6 +73,9 @@ export default function EditSupplierPage() {
           branch: '',
         },
       })
+      if (data.payment_terms && !['immediate', '7_days', '15_days', '30_days'].includes(data.payment_terms)) {
+        setPaymentTermsOther(data.payment_terms)
+      }
     } catch (err: any) {
       setError(err.message)
     } finally {
@@ -88,29 +89,24 @@ export default function EditSupplierPage() {
     setError(null)
 
     try {
-      const { error: updateError } = await supabase
-        .from('suppliers')
-        .update({
-          name: formData.name,
-          phone: formData.phone,
-          email: formData.email,
-          address: formData.address,
-          city: formData.city,
-          state: formData.state,
-          pincode: formData.pincode,
-          gst_number: formData.gst_number,
-          pan_number: formData.pan_number,
-          contact_person: formData.contact_person,
-          alternate_phone: formData.alternate_phone,
-          supply_capacity: formData.supply_capacity,
-          payment_terms: formData.payment_terms,
-          kyc_status: formData.kyc_status,
-          auto_receipt_pref: formData.auto_receipt_pref,
-          bank_account: formData.bank_account,
-        })
-        .eq('id', params.id)
-
-      if (updateError) throw updateError
+      await updateDoc(doc(db, 'suppliers', params.id as string), {
+        name: formData.name,
+        phone: formData.phone,
+        email: formData.email,
+        address: formData.address,
+        city: formData.city,
+        state: formData.state,
+        pincode: formData.pincode,
+        gst_number: formData.gst_number,
+        pan_number: formData.pan_number,
+        contact_person: formData.contact_person,
+        alternate_phone: formData.alternate_phone,
+        supply_capacity: formData.supply_capacity,
+        payment_terms: formData.payment_terms === 'other' ? paymentTermsOther : formData.payment_terms,
+        kyc_status: formData.kyc_status,
+        auto_receipt_pref: formData.auto_receipt_pref,
+        bank_account: formData.bank_account,
+      })
 
       router.push('/dashboard/suppliers')
       router.refresh()
@@ -286,7 +282,18 @@ export default function EditSupplierPage() {
                 <option value="7_days">7 Days</option>
                 <option value="15_days">15 Days</option>
                 <option value="30_days">30 Days</option>
+                <option value="other">Other</option>
               </select>
+              {formData.payment_terms === 'other' && (
+                <input
+                  type="text"
+                  value={paymentTermsOther}
+                  onChange={(e) => setPaymentTermsOther(e.target.value)}
+                  className="w-full mt-2 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  placeholder="Specify payment terms"
+                  required
+                />
+              )}
             </div>
           </div>
 

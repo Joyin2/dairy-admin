@@ -1,28 +1,70 @@
-import { createClient } from '@/lib/supabase/server'
+'use client'
+
+import { db } from '@/lib/firebase/client'
+import {
+  collection,
+  query,
+  getDocs,
+  doc,
+  deleteDoc,
+  getDoc,
+} from 'firebase/firestore'
 import Link from 'next/link'
-import { revalidatePath } from 'next/cache'
-import DeleteSupplierButton from './DeleteSupplierButton'
+import { useEffect, useState } from 'react'
 
-async function deleteSupplier(formData: FormData) {
-  'use server'
-  const supabase = await createClient()
-  const id = formData.get('id')
-  
-  await supabase
-    .from('suppliers')
-    .delete()
-    .eq('id', id)
-  
-  revalidatePath('/dashboard/suppliers')
-}
+export default function SuppliersPage() {
+  const [suppliers, setSuppliers] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [deleting, setDeleting] = useState<string | null>(null)
+  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null)
 
-export default async function SuppliersPage() {
-  const supabase = await createClient()
+  useEffect(() => {
+    loadSuppliers()
+  }, [])
 
-  const { data: suppliers } = await supabase
-    .from('suppliers')
-    .select('*, app_users(name)')
-    .order('created_at', { ascending: false })
+  const loadSuppliers = async () => {
+    setLoading(true)
+    const snap = await getDocs(query(collection(db, 'suppliers')))
+
+    // Join with app_users to get created_by user name
+    const items = await Promise.all(
+      snap.docs.map(async (d) => {
+        const supplier = { id: d.id, ...d.data() } as any
+        if (supplier.created_by) {
+          const userSnap = await getDoc(doc(db, 'app_users', supplier.created_by))
+          supplier.app_users = userSnap.exists() ? userSnap.data() : null
+        }
+        return supplier
+      })
+    )
+
+    items.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+    setSuppliers(items)
+    setLoading(false)
+  }
+
+  const handleDeleteClick = (supplier: any) => {
+    setDeleteConfirm({ id: supplier.id, name: supplier.name })
+  }
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteConfirm) return
+    const id = deleteConfirm.id
+    setDeleting(id)
+    setDeleteConfirm(null)
+    try {
+      await deleteDoc(doc(db, 'suppliers', id))
+      setSuppliers((prev) => prev.filter((s) => s.id !== id))
+    } catch (err: any) {
+      alert('Failed to delete: ' + err.message)
+    } finally {
+      setDeleting(null)
+    }
+  }
+
+  if (loading) {
+    return <div className="text-center py-12">Loading...</div>
+  }
 
   return (
     <div className="space-y-6">
@@ -74,7 +116,8 @@ export default async function SuppliersPage() {
                       {supplier.payment_terms === 'immediate' ? 'Immediate' :
                        supplier.payment_terms === '7_days' ? '7 Days' :
                        supplier.payment_terms === '15_days' ? '15 Days' :
-                       supplier.payment_terms === '30_days' ? '30 Days' : 'N/A'}
+                       supplier.payment_terms === '30_days' ? '30 Days' :
+                       supplier.payment_terms || 'N/A'}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <span className={`px-2 py-1 text-xs rounded-full ${
@@ -89,7 +132,13 @@ export default async function SuppliersPage() {
                       <Link href={`/dashboard/suppliers/${supplier.id}`} className="text-blue-600 hover:text-blue-900">
                         Edit
                       </Link>
-                      <DeleteSupplierButton supplierId={supplier.id} deleteAction={deleteSupplier} />
+                      <button
+                        onClick={() => handleDeleteClick(supplier)}
+                        disabled={deleting === supplier.id}
+                        className="text-red-600 hover:text-red-900 disabled:opacity-50"
+                      >
+                        {deleting === supplier.id ? 'Deleting...' : 'Delete'}
+                      </button>
                     </td>
                   </tr>
                 ))
@@ -104,6 +153,40 @@ export default async function SuppliersPage() {
           </table>
         </div>
       </div>
+
+      {/* Delete confirmation modal */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full shadow-xl">
+            <div className="flex items-start">
+              <div className="flex-shrink-0 w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                <span className="text-red-600 text-2xl">⚠</span>
+              </div>
+              <div className="ml-4">
+                <h3 className="text-lg font-bold text-gray-900">Delete Supplier?</h3>
+                <p className="mt-2 text-sm text-gray-600">
+                  Are you sure you want to delete <strong>{deleteConfirm.name}</strong>? This action cannot be undone.
+                </p>
+              </div>
+            </div>
+            <div className="mt-6 flex gap-3 justify-end">
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg font-medium hover:bg-gray-300"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteConfirm}
+                disabled={deleting === deleteConfirm.id}
+                className="px-4 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleting === deleteConfirm.id ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

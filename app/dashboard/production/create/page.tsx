@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { db, auth } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, doc, getDoc, updateDoc, addDoc, deleteDoc } from 'firebase/firestore'
 import { useRouter } from 'next/navigation'
 
 interface RawMaterial {
@@ -14,12 +15,11 @@ interface RawMaterial {
 
 export default function CreateProductionPage() {
   const router = useRouter()
-  const supabase = createClient()
-  
+
   const [step, setStep] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  
+
   // Step 1: Milk Usage
   const [pool, setPool] = useState<any>(null)
   const [milkData, setMilkData] = useState({
@@ -27,13 +27,13 @@ export default function CreateProductionPage() {
     fat_percent: '',
     snf_percent: ''
   })
-  
+
   // Step 2: Raw Materials
   const [availableMaterials, setAvailableMaterials] = useState<any[]>([])
   const [rawMaterials, setRawMaterials] = useState<RawMaterial[]>([
     { id: '1', material_id: '', quantity: '', unit: '' }
   ])
-  
+
   // Step 3: Processing Details
   const [processingData, setProcessingData] = useState({
     product_type: '',
@@ -43,7 +43,7 @@ export default function CreateProductionPage() {
     final_fat_percent: '',
     final_snf_percent: ''
   })
-  
+
   const [notes, setNotes] = useState('')
 
   useEffect(() => {
@@ -52,13 +52,12 @@ export default function CreateProductionPage() {
 
   const loadInitialData = async () => {
     // Load active milk pool
-    const { data: poolData } = await supabase
-      .from('milk_pool')
-      .select('*')
-      .eq('status', 'active')
-      .single()
-    
-    if (poolData) {
+    const poolQ = query(collection(db, 'milk_pool'), where('status', '==', 'active'))
+    const poolSnap = await getDocs(poolQ)
+
+    if (!poolSnap.empty) {
+      const poolDoc = poolSnap.docs[0]
+      const poolData = { id: poolDoc.id, ...poolDoc.data() } as any
       setPool(poolData)
       // Pre-fill with current pool averages
       setMilkData(prev => ({
@@ -67,59 +66,60 @@ export default function CreateProductionPage() {
         snf_percent: poolData.current_avg_snf?.toFixed(2) || ''
       }))
     }
-    
+
     // Load raw materials
-    const { data: materials } = await supabase
-      .from('raw_materials')
-      .select('id, name, unit')
-      .eq('is_active', true)
-      .order('name')
-    
-    setAvailableMaterials(materials || [])
+    const materialsQ = query(
+      collection(db, 'raw_materials'),
+      where('is_active', '==', true)
+    )
+    const materialsSnap = await getDocs(materialsQ)
+    const materials = materialsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any))
+    materials.sort((a: any, b: any) => a.name.localeCompare(b.name))
+    setAvailableMaterials(materials)
   }
 
   const validateStep1 = () => {
     const liters = parseFloat(milkData.liters)
     const fatPercent = parseFloat(milkData.fat_percent)
     const snfPercent = parseFloat(milkData.snf_percent)
-    
+
     if (!liters || liters <= 0) {
       setError('Please enter valid liters')
       return false
     }
-    
+
     if (!pool || liters > pool.remaining_milk_liters) {
       setError(`Only ${pool?.remaining_milk_liters || 0}L available in pool`)
       return false
     }
-    
+
     if (!fatPercent || fatPercent <= 0 || fatPercent > 10) {
       setError('Fat % must be between 0 and 10')
       return false
     }
-    
+
     if (!snfPercent || snfPercent <= 0 || snfPercent > 15) {
       setError('SNF % must be between 0 and 15')
       return false
     }
-    
+
     const maxFat = pool.remaining_fat_units / liters
     if (fatPercent > maxFat + 0.1) {
       setError(`Fat % cannot exceed ${maxFat.toFixed(2)}% for ${liters}L`)
       return false
     }
-    
+
     return true
   }
 
   const validateStep2 = () => {
     const validMaterials = rawMaterials.filter(m => m.material_id && parseFloat(m.quantity) > 0)
-    
+
     if (validMaterials.length === 0) {
       setError('Please add at least one raw material')
       return false
     }
-    
+
     return true
   }
 
@@ -128,17 +128,17 @@ export default function CreateProductionPage() {
       setError('Please enter product type')
       return false
     }
-    
+
     return true
   }
 
   const handleNext = () => {
     setError(null)
-    
+
     if (step === 1 && !validateStep1()) return
     if (step === 2 && !validateStep2()) return
     if (step === 3 && !validateStep3()) return
-    
+
     setStep(step + 1)
   }
 
@@ -170,17 +170,77 @@ export default function CreateProductionPage() {
     }))
   }
 
+  // Generate a production code: PROD-YYYYMMDD-XXXX
+  const generateProductionCode = () => {
+    const now = new Date()
+    const dateStr = now.getFullYear().toString() +
+      String(now.getMonth() + 1).padStart(2, '0') +
+      String(now.getDate()).padStart(2, '0')
+    const random = Math.random().toString(36).substr(2, 4).toUpperCase()
+    return `PROD-${dateStr}-${random}`
+  }
+
+  // Generate a batch number: PREFIX-YYYYMMDD-XXXX
+  const generateBatchNumber = (productPrefix: string) => {
+    const now = new Date()
+    const dateStr = now.getFullYear().toString() +
+      String(now.getMonth() + 1).padStart(2, '0') +
+      String(now.getDate()).padStart(2, '0')
+    const random = Math.random().toString(36).substr(2, 4).toUpperCase()
+    return `${productPrefix}-${dateStr}-${random}`
+  }
+
   const handleSubmit = async () => {
     setLoading(true)
     setError(null)
 
+    let milkUsageRef: { id: string } | null = null
+    let productionRef: { id: string } | null = null
+
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      const { data: appUser } = await supabase
-        .from('app_users')
-        .select('id')
-        .eq('auth_uid', user?.id)
-        .single()
+      // Re-fetch raw material stock for accurate validation
+      const materialsSnap = await getDocs(
+        query(collection(db, 'raw_materials'), where('is_active', '==', true))
+      )
+      const latestMaterials = Object.fromEntries(
+        materialsSnap.docs.map(d => [d.id, { ...d.data(), id: d.id } as any])
+      )
+
+      // Validate raw material stock before proceeding
+      const validMaterials = rawMaterials.filter(m => m.material_id && parseFloat(m.quantity) > 0)
+      const shortages: { name: string; available: number; required: number; unit: string }[] = []
+
+      for (const material of validMaterials) {
+        const mat = latestMaterials[material.material_id] ?? availableMaterials.find(m => m.id === material.material_id)
+        const required = parseFloat(material.quantity)
+        const available = parseFloat(mat?.current_stock ?? 0)
+        if (available < required) {
+          shortages.push({
+            name: mat?.name ?? 'Unknown',
+            available,
+            required,
+            unit: material.unit || (mat?.unit ?? ''),
+          })
+        }
+      }
+
+      if (shortages.length > 0) {
+        const shortageList = shortages
+          .map(s => `• ${s.name}: available ${s.available} ${s.unit}, required ${s.required} ${s.unit}`)
+          .join('\n')
+        setError(`Insufficient raw material:\n${shortageList}`)
+        setLoading(false)
+        return
+      }
+
+      // Get current user app ID
+      const user = auth.currentUser
+      let appUserId: string | null = null
+      if (user) {
+        const appUserQ = query(collection(db, 'app_users'), where('auth_uid', '==', user.uid))
+        const appUserSnap = await getDocs(appUserQ)
+        if (!appUserSnap.empty) appUserId = appUserSnap.docs[0].id
+      }
 
       // Step 1: Create Milk Usage
       const liters = parseFloat(milkData.liters)
@@ -195,113 +255,150 @@ export default function CreateProductionPage() {
       const newAvgFat = newRemainingLiters > 0 ? (newRemainingFatUnits / newRemainingLiters) : 0
       const newAvgSnf = newRemainingLiters > 0 ? (newRemainingSnfUnits / newRemainingLiters) : 0
 
-      const { data: milkUsage, error: usageError } = await supabase
-        .from('milk_usage_log')
-        .insert({
-          milk_pool_id: pool.id,
-          used_liters: liters,
-          manual_fat_percent: fatPercent,
-          manual_snf_percent: snfPercent,
-          used_fat_units: fatUnits,
-          used_snf_units: snfUnits,
-          remaining_liters_after: newRemainingLiters,
-          remaining_fat_units_after: newRemainingFatUnits,
-          remaining_avg_fat_after: newAvgFat,
-          remaining_avg_snf_after: newAvgSnf,
-          purpose: `Production - ${processingData.product_type}`
-        })
-        .select()
-        .single()
-
-      if (usageError) throw usageError
+      milkUsageRef = await addDoc(collection(db, 'milk_usage_log'), {
+        milk_pool_id: pool.id,
+        used_liters: liters,
+        manual_fat_percent: fatPercent,
+        manual_snf_percent: snfPercent,
+        used_fat_units: fatUnits,
+        used_snf_units: snfUnits,
+        remaining_liters_after: newRemainingLiters,
+        remaining_fat_units_after: newRemainingFatUnits,
+        remaining_avg_fat_after: newAvgFat,
+        remaining_avg_snf_after: newAvgSnf,
+        purpose: `Production - ${processingData.product_type}`,
+        created_at: new Date().toISOString(),
+      })
 
       // Update pool
-      await supabase
-        .from('milk_pool')
-        .update({
-          remaining_milk_liters: newRemainingLiters,
-          remaining_fat_units: newRemainingFatUnits,
-          remaining_snf_units: newRemainingSnfUnits,
-          current_avg_fat: newAvgFat,
-          current_avg_snf: newAvgSnf
-        })
-        .eq('id', pool.id)
+      await updateDoc(doc(db, 'milk_pool', pool.id), {
+        remaining_milk_liters: newRemainingLiters,
+        remaining_fat_units: newRemainingFatUnits,
+        remaining_snf_units: newRemainingSnfUnits,
+        current_avg_fat: newAvgFat,
+        current_avg_snf: newAvgSnf,
+        updated_at: new Date().toISOString(),
+      })
 
       // Step 2: Create Production
-      const { data: productionCodeData } = await supabase.rpc('generate_production_code')
-      
-      const { data: production, error: prodError } = await supabase
-        .from('production')
-        .insert({
-          production_code: productionCodeData,
-          milk_pool_id: pool.id,
-          milk_usage_log_id: milkUsage.id,
-          milk_used_liters: liters,
-          milk_used_fat_percent: fatPercent,
-          milk_used_snf_percent: snfPercent,
-          milk_used_fat_units: fatUnits,
-          milk_used_snf_units: snfUnits,
-          status: 'draft',
-          notes: notes,
-          created_by: appUser?.id
+      const productionCode = generateProductionCode()
+
+      productionRef = await addDoc(collection(db, 'production'), {
+        production_code: productionCode,
+        milk_pool_id: pool.id,
+        milk_usage_log_id: milkUsageRef.id,
+        milk_used_liters: liters,
+        milk_used_fat_percent: fatPercent,
+        milk_used_snf_percent: snfPercent,
+        milk_used_fat_units: fatUnits,
+        milk_used_snf_units: snfUnits,
+        status: 'draft',
+        notes: notes,
+        created_by: appUserId,
+        created_at: new Date().toISOString(),
+      })
+
+      // Step 3: Add Raw Materials and deduct stock
+      const materialsToDeduct = rawMaterials.filter(m => m.material_id && parseFloat(m.quantity) > 0)
+      const materialDeductions: { material_id: string; quantity: number }[] = []
+
+      for (const material of materialsToDeduct) {
+        const qty = parseFloat(material.quantity)
+        await addDoc(collection(db, 'production_raw_materials'), {
+          production_id: productionRef.id,
+          material_id: material.material_id,
+          quantity_used: qty,
+          unit: material.unit,
+          consumed_by: appUserId,
+          created_at: new Date().toISOString(),
         })
-        .select()
-        .single()
-
-      if (prodError) throw prodError
-
-      // Step 3: Add Raw Materials
-      const validMaterials = rawMaterials.filter(m => m.material_id && parseFloat(m.quantity) > 0)
-      
-      for (const material of validMaterials) {
-        const { error: matError } = await supabase
-          .from('production_raw_materials')
-          .insert({
-            production_id: production.id,
-            material_id: material.material_id,
-            quantity_used: parseFloat(material.quantity),
-            unit: material.unit,
-            consumed_by: appUser?.id
-          })
-        
-        if (matError) throw matError
+        // Deduct from raw_materials.current_stock
+        const mat = latestMaterials[material.material_id] ?? availableMaterials.find((m: any) => m.id === material.material_id)
+        const currentStock = parseFloat(mat?.current_stock ?? 0)
+        const newStock = currentStock - qty
+        await updateDoc(doc(db, 'raw_materials', material.material_id), {
+          current_stock: newStock,
+          updated_at: new Date().toISOString(),
+        })
+        materialDeductions.push({ material_id: material.material_id, quantity: qty })
       }
 
       // Update production status to ready
-      await supabase
-        .from('production')
-        .update({ status: 'ready' })
-        .eq('id', production.id)
+      await updateDoc(doc(db, 'production', productionRef.id), {
+        status: 'ready',
+        updated_at: new Date().toISOString(),
+      })
 
       // Step 4: Create Processing Batch
       const productPrefix = processingData.product_type.substring(0, 4).toUpperCase()
-      const { data: batchNumber } = await supabase.rpc('generate_batch_number', { product_prefix: productPrefix })
-      
-      const { data: batch, error: batchError } = await supabase
-        .from('processing_batches')
-        .insert({
-          production_id: production.id,
-          batch_number: batchNumber,
-          product_type: processingData.product_type,
-          input_milk_liters: liters,
-          input_fat_percent: fatPercent,
-          input_snf_percent: snfPercent,
-          final_fat_percent: processingData.final_fat_percent ? parseFloat(processingData.final_fat_percent) : null,
-          final_snf_percent: processingData.final_snf_percent ? parseFloat(processingData.final_snf_percent) : null,
-          temperature: processingData.temperature,
-          processing_time: processingData.processing_time,
-          culture_details: processingData.culture_details,
-          status: 'processing',
-          created_by: appUser?.id
-        })
-        .select()
-        .single()
+      const batchNumber = generateBatchNumber(productPrefix)
 
-      if (batchError) throw batchError
+      await addDoc(collection(db, 'processing_batches'), {
+        production_id: productionRef.id,
+        batch_number: batchNumber,
+        product_type: processingData.product_type,
+        input_milk_liters: liters,
+        input_fat_percent: fatPercent,
+        input_snf_percent: snfPercent,
+        final_fat_percent: processingData.final_fat_percent ? parseFloat(processingData.final_fat_percent) : null,
+        final_snf_percent: processingData.final_snf_percent ? parseFloat(processingData.final_snf_percent) : null,
+        temperature: processingData.temperature,
+        processing_time: processingData.processing_time,
+        culture_details: processingData.culture_details,
+        status: 'processing',
+        created_by: appUserId,
+        created_at: new Date().toISOString(),
+      })
 
-      router.push(`/dashboard/production/${production.id}`)
+      router.push(`/dashboard/production/${productionRef.id}`)
     } catch (err: any) {
       setError(err.message || 'Failed to create production')
+      // Rollback: if we created production/milk_usage, revert to release frozen resources
+      try {
+        if (productionRef?.id) {
+          const prodId = productionRef.id
+          // Delete processing_batches
+          const batchSnap = await getDocs(query(collection(db, 'processing_batches'), where('production_id', '==', prodId)))
+          for (const d of batchSnap.docs) {
+            await deleteDoc(doc(db, 'processing_batches', d.id))
+          }
+          // Delete production_raw_materials and restore stock
+          const prmSnap = await getDocs(query(collection(db, 'production_raw_materials'), where('production_id', '==', prodId)))
+          for (const d of prmSnap.docs) {
+            const data = d.data() as any
+            const matDoc = await getDoc(doc(db, 'raw_materials', data.material_id))
+            if (matDoc.exists()) {
+              const mat = matDoc.data() as any
+              const current = parseFloat(mat.current_stock ?? 0)
+              await updateDoc(doc(db, 'raw_materials', data.material_id), {
+                current_stock: current + (data.quantity_used ?? 0),
+                updated_at: new Date().toISOString(),
+              })
+            }
+            await deleteDoc(doc(db, 'production_raw_materials', d.id))
+          }
+          await deleteDoc(doc(db, 'production', prodId))
+        }
+        if (milkUsageRef?.id) {
+          const milkData = (await getDoc(doc(db, 'milk_usage_log', milkUsageRef.id))).data() as any
+          if (milkData && pool) {
+            const addBackL = milkData.used_liters ?? 0
+            const addBackF = milkData.used_fat_units ?? 0
+            const addBackS = milkData.used_snf_units ?? 0
+            const poolDoc = await getDoc(doc(db, 'milk_pool', pool.id))
+            const p = poolDoc.data() as any
+            await updateDoc(doc(db, 'milk_pool', pool.id), {
+              remaining_milk_liters: (p.remaining_milk_liters ?? 0) + addBackL,
+              remaining_fat_units: (p.remaining_fat_units ?? 0) + addBackF,
+              remaining_snf_units: (p.remaining_snf_units ?? 0) + addBackS,
+              updated_at: new Date().toISOString(),
+            })
+          }
+          await deleteDoc(doc(db, 'milk_usage_log', milkUsageRef.id))
+        }
+      } catch (rollbackErr) {
+        console.error('Rollback failed:', rollbackErr)
+      }
     } finally {
       setLoading(false)
     }
@@ -334,7 +431,7 @@ export default function CreateProductionPage() {
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6">
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6 whitespace-pre-line">
           {error}
         </div>
       )}
@@ -343,7 +440,7 @@ export default function CreateProductionPage() {
       {step === 1 && (
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-xl font-bold text-gray-900 mb-4">Step 1: Milk Usage</h2>
-          
+
           {pool && (
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
               <div className="grid grid-cols-3 gap-4 text-sm">
@@ -362,7 +459,7 @@ export default function CreateProductionPage() {
               </div>
             </div>
           )}
-          
+
           <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -376,7 +473,7 @@ export default function CreateProductionPage() {
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Fat % <span className="text-red-500">*</span>
@@ -389,7 +486,7 @@ export default function CreateProductionPage() {
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 SNF % <span className="text-red-500">*</span>
@@ -410,7 +507,7 @@ export default function CreateProductionPage() {
       {step === 2 && (
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-xl font-bold text-gray-900 mb-4">Step 2: Raw Materials Consumption</h2>
-          
+
           <div className="space-y-4">
             {rawMaterials.map((material, index) => (
               <div key={material.id} className="flex gap-4 items-end">
@@ -429,7 +526,7 @@ export default function CreateProductionPage() {
                     ))}
                   </select>
                 </div>
-                
+
                 <div className="w-32">
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Quantity <span className="text-red-500">*</span>
@@ -442,7 +539,7 @@ export default function CreateProductionPage() {
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
-                
+
                 <div className="w-24">
                   <label className="block text-sm font-medium text-gray-700 mb-2">Unit</label>
                   <input
@@ -452,7 +549,7 @@ export default function CreateProductionPage() {
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
-                
+
                 {rawMaterials.length > 1 && (
                   <button
                     onClick={() => removeRawMaterial(material.id)}
@@ -464,7 +561,7 @@ export default function CreateProductionPage() {
               </div>
             ))}
           </div>
-          
+
           <button
             onClick={addRawMaterial}
             className="mt-4 text-blue-600 hover:text-blue-800 font-medium"
@@ -478,7 +575,7 @@ export default function CreateProductionPage() {
       {step === 3 && (
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-xl font-bold text-gray-900 mb-4">Step 3: Processing Details</h2>
-          
+
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -492,7 +589,7 @@ export default function CreateProductionPage() {
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            
+
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Temperature</label>
@@ -504,7 +601,7 @@ export default function CreateProductionPage() {
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Processing Time</label>
                 <input
@@ -516,7 +613,7 @@ export default function CreateProductionPage() {
                 />
               </div>
             </div>
-            
+
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Final Fat %</label>
@@ -528,7 +625,7 @@ export default function CreateProductionPage() {
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Final SNF %</label>
                 <input
@@ -540,7 +637,7 @@ export default function CreateProductionPage() {
                 />
               </div>
             </div>
-            
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Culture Details</label>
               <textarea
@@ -550,7 +647,7 @@ export default function CreateProductionPage() {
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Production Notes</label>
               <textarea
@@ -568,7 +665,7 @@ export default function CreateProductionPage() {
       {step === 4 && (
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-xl font-bold text-gray-900 mb-4">Step 4: Review & Submit</h2>
-          
+
           <div className="space-y-4">
             <div className="border-b pb-4">
               <h3 className="font-semibold text-gray-900 mb-2">Milk Usage</h3>
@@ -576,7 +673,7 @@ export default function CreateProductionPage() {
                 {milkData.liters}L @ {milkData.fat_percent}% Fat, {milkData.snf_percent}% SNF
               </p>
             </div>
-            
+
             <div className="border-b pb-4">
               <h3 className="font-semibold text-gray-900 mb-2">Raw Materials</h3>
               {rawMaterials.filter(m => m.material_id).map((material) => {
@@ -588,7 +685,7 @@ export default function CreateProductionPage() {
                 )
               })}
             </div>
-            
+
             <div>
               <h3 className="font-semibold text-gray-900 mb-2">Processing</h3>
               <p className="text-sm text-gray-700">Product: {processingData.product_type}</p>
@@ -609,7 +706,7 @@ export default function CreateProductionPage() {
             Previous
           </button>
         )}
-        
+
         {step < 4 ? (
           <button
             onClick={handleNext}
@@ -626,7 +723,7 @@ export default function CreateProductionPage() {
             {loading ? 'Creating...' : 'Create Production'}
           </button>
         )}
-        
+
         <button
           onClick={() => router.back()}
           className="px-6 py-2 bg-gray-200 text-gray-800 rounded-lg font-medium hover:bg-gray-300"

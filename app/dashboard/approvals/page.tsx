@@ -1,10 +1,10 @@
 'use client'
 
-import { createClient } from '@/lib/supabase/client'
+import { db, auth } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, doc, updateDoc, getDoc } from 'firebase/firestore'
 import { useEffect, useState } from 'react'
 
 export default function ApprovalsPage() {
-  const supabase = createClient()
   const [pendingShops, setPendingShops] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [processing, setProcessing] = useState<string | null>(null)
@@ -15,42 +15,64 @@ export default function ApprovalsPage() {
 
   const fetchPendingShops = async () => {
     setLoading(true)
-    const { data, error } = await supabase
-      .from('shops')
-      .select('*, created_by_user:app_users!shops_created_by_fkey(name, email, phone)')
-      .eq('status', 'pending_approval')
-      .order('created_at', { ascending: false })
+    try {
+      const q = query(
+        collection(db, 'shops'),
+        where('status', '==', 'pending_approval')
+      )
+      const snapshot = await getDocs(q)
+      const shops = snapshot.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .sort((a: any, b: any) => {
+          const ta = a.created_at?.toDate?.() ?? new Date(a.created_at ?? 0)
+          const tb = b.created_at?.toDate?.() ?? new Date(b.created_at ?? 0)
+          return tb.getTime() - ta.getTime()
+        })
 
-    if (!error && data) {
-      setPendingShops(data)
+      // Enrich with creator user info
+      const enriched = await Promise.all(
+        shops.map(async (shop: any) => {
+          if (!shop.created_by) return shop
+          try {
+            const userDoc = await getDoc(doc(db, 'app_users', shop.created_by))
+            return {
+              ...shop,
+              created_by_user: userDoc.exists() ? userDoc.data() : null,
+            }
+          } catch {
+            return shop
+          }
+        })
+      )
+
+      setPendingShops(enriched)
+    } catch (err: any) {
+      console.error('Error fetching pending shops:', err)
     }
     setLoading(false)
   }
 
   const handleApprove = async (shopId: string, shopName: string) => {
     if (!confirm(`Approve shop: ${shopName}?`)) return
-    
+
     setProcessing(shopId)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      
       // Get the app_users id from auth_uid
-      const { data: appUser } = await supabase
-        .from('app_users')
-        .select('id')
-        .eq('auth_uid', user?.id)
-        .single()
-      
-      const { error } = await supabase
-        .from('shops')
-        .update({
-          status: 'approved',
-          approved_by: appUser?.id,
-          approved_at: new Date().toISOString(),
-        })
-        .eq('id', shopId)
+      let adminId = null
+      const uid = auth.currentUser?.uid
+      if (uid) {
+        const usersQ = query(collection(db, 'app_users'), where('auth_uid', '==', uid))
+        const usersSnap = await getDocs(usersQ)
+        if (!usersSnap.empty) {
+          adminId = usersSnap.docs[0].id
+        }
+      }
 
-      if (error) throw error
+      await updateDoc(doc(db, 'shops', shopId), {
+        status: 'approved',
+        approved_by: adminId,
+        approved_at: new Date().toISOString(),
+      })
 
       alert(`Shop "${shopName}" has been approved!`)
       fetchPendingShops()
@@ -64,29 +86,26 @@ export default function ApprovalsPage() {
   const handleReject = async (shopId: string, shopName: string) => {
     const notes = prompt(`Reject shop "${shopName}"? Enter rejection reason:`)
     if (!notes) return
-    
+
     setProcessing(shopId)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      
       // Get the app_users id from auth_uid
-      const { data: appUser } = await supabase
-        .from('app_users')
-        .select('id')
-        .eq('auth_uid', user?.id)
-        .single()
-      
-      const { error } = await supabase
-        .from('shops')
-        .update({
-          status: 'rejected',
-          approval_notes: notes,
-          approved_by: appUser?.id,
-          approved_at: new Date().toISOString(),
-        })
-        .eq('id', shopId)
+      let adminId = null
+      const uid = auth.currentUser?.uid
+      if (uid) {
+        const usersQ = query(collection(db, 'app_users'), where('auth_uid', '==', uid))
+        const usersSnap = await getDocs(usersQ)
+        if (!usersSnap.empty) {
+          adminId = usersSnap.docs[0].id
+        }
+      }
 
-      if (error) throw error
+      await updateDoc(doc(db, 'shops', shopId), {
+        status: 'rejected',
+        approval_notes: notes,
+        approved_by: adminId,
+        approved_at: new Date().toISOString(),
+      })
 
       alert(`Shop "${shopName}" has been rejected.`)
       fetchPendingShops()
@@ -170,7 +189,7 @@ export default function ApprovalsPage() {
                   </div>
                 </div>
               </div>
-              
+
               <div className="flex gap-3 pt-4 border-t">
                 <button
                   onClick={() => handleApprove(shop.id, shop.name)}

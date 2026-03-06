@@ -1,6 +1,7 @@
 'use client'
 
-import { createClient } from '@/lib/supabase/client'
+import { db, auth } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, orderBy, doc, addDoc, updateDoc } from 'firebase/firestore'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
@@ -19,7 +20,6 @@ interface SelectedItem extends InventoryItem {
 }
 
 export default function CreateDispatchPage() {
-  const supabase = createClient()
   const router = useRouter()
 
   const [agents, setAgents] = useState<any[]>([])
@@ -37,21 +37,22 @@ export default function CreateDispatchPage() {
   }, [])
 
   const fetchData = async () => {
-    const [agentsRes, inventoryRes] = await Promise.all([
-      supabase
-        .from('app_users')
-        .select('id, name, email, phone, role')
-        .eq('role', 'delivery_agent')
-        .order('name'),
-      supabase
-        .from('production_inventory')
-        .select('*')
-        .gt('quantity', 0)
-        .order('product_name'),
+    const [agentsSnap, inventorySnap] = await Promise.all([
+      getDocs(query(
+        collection(db, 'app_users'),
+        where('role', '==', 'delivery_agent'),
+        orderBy('name')
+      )),
+      getDocs(query(
+        collection(db, 'production_inventory'),
+        where('quantity', '>', 0),
+        orderBy('quantity'),
+        orderBy('product_name')
+      )),
     ])
 
-    setAgents(agentsRes.data || [])
-    setInventory(inventoryRes.data || [])
+    setAgents(agentsSnap.docs.map(d => ({ id: d.id, ...d.data() })))
+    setInventory(inventorySnap.docs.map(d => ({ id: d.id, ...d.data() })) as InventoryItem[])
   }
 
   const addItem = (item: InventoryItem) => {
@@ -111,72 +112,51 @@ export default function CreateDispatchPage() {
 
     try {
       // Get current admin user
-      const { data: { user } } = await supabase.auth.getUser()
       let adminId = null
-      if (user) {
-        const { data: appUser } = await supabase
-          .from('app_users')
-          .select('id')
-          .eq('auth_uid', user.id)
-          .single()
-        adminId = appUser?.id
+      const uid = auth.currentUser?.uid
+      if (uid) {
+        const usersQ = query(collection(db, 'app_users'), where('auth_uid', '==', uid))
+        const usersSnap = await getDocs(usersQ)
+        if (!usersSnap.empty) {
+          adminId = usersSnap.docs[0].id
+        }
       }
 
       // 1. Create allocation
-      const { data: allocation, error: allocError } = await supabase
-        .from('agent_stock_allocations')
-        .insert({
-          agent_id: selectedAgent,
-          status: 'pending_pickup',
-          notes: notes || null,
-          created_by: adminId,
-        })
-        .select()
-        .single()
-
-      if (allocError) {
-        console.error('Allocation insert error:', allocError)
-        if (allocError.message?.includes('schema cache')) {
-          setError('Database schema cache needs refresh. Please run this SQL in Supabase SQL Editor: NOTIFY pgrst, \'reload schema\'; Then try again.')
-        } else {
-          setError(`Failed to create allocation: ${allocError.message}`)
-        }
-        return
-      }
+      const allocationRef = await addDoc(collection(db, 'agent_stock_allocations'), {
+        agent_id: selectedAgent,
+        status: 'pending_pickup',
+        notes: notes || null,
+        created_by: adminId,
+        created_at: new Date().toISOString(),
+      })
 
       // 2. Create stock items
-      const stockItems = selectedItems.map(item => ({
-        allocation_id: allocation.id,
-        inventory_item_id: item.id,
-        product_name: item.product_name,
-        batch_number: item.batch_number,
-        packaging_type: item.packaging_type || null,
-        package_size: item.package_size || null,
-        quantity_allocated: parseFloat(item.allocateQty),
-        unit: item.unit,
-      }))
-
-      const { error: itemsError } = await supabase
-        .from('agent_stock_items')
-        .insert(stockItems)
-
-      if (itemsError) throw itemsError
+      const stockItemPromises = selectedItems.map(item =>
+        addDoc(collection(db, 'agent_stock_items'), {
+          allocation_id: allocationRef.id,
+          inventory_item_id: item.id,
+          product_name: item.product_name,
+          batch_number: item.batch_number,
+          packaging_type: item.packaging_type || null,
+          package_size: item.package_size || null,
+          quantity_allocated: parseFloat(item.allocateQty),
+          unit: item.unit,
+          quantity_sold: 0,
+          quantity_returned: 0,
+          created_at: new Date().toISOString(),
+        })
+      )
+      await Promise.all(stockItemPromises)
 
       // 3. Deduct from production_inventory
-      for (const item of selectedItems) {
+      const deductPromises = selectedItems.map(item => {
         const newQty = item.quantity - parseFloat(item.allocateQty)
-        const { error: deductError } = await supabase
-          .from('production_inventory')
-          .update({ quantity: newQty })
-          .eq('id', item.id)
-
-        if (deductError) {
-          console.error('Failed to deduct inventory for', item.product_name, deductError)
-        }
-      }
+        return updateDoc(doc(db, 'production_inventory', item.id), { quantity: newQty })
+      })
+      await Promise.all(deductPromises)
 
       router.push('/dashboard/dispatch')
-      router.refresh()
     } catch (err: any) {
       setError(err.message || 'Failed to create dispatch')
     } finally {

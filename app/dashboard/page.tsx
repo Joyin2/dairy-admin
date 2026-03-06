@@ -1,45 +1,76 @@
-import { createClient } from '@/lib/supabase/server'
+import { adminDb } from '@/lib/firebase/admin'
 import Link from 'next/link'
 
 export default async function DashboardPage() {
-  const supabase = await createClient()
+  const todayStr = new Date().toISOString().split('T')[0]
 
-  // Fetch dashboard statistics
+  // Fetch all counts in parallel
   const [
-    { count: totalCollections },
-    { count: todayCollections },
-    { count: pendingDeliveries },
-    { count: activeRoutes },
-    { count: totalSuppliers },
-    { count: totalShops },
+    totalCollectionsSnap,
+    todayCollectionsSnap,
+    pendingDeliveriesSnap,
+    activeRoutesSnap,
+    totalSuppliersSnap,
+    totalShopsSnap,
   ] = await Promise.all([
-    supabase.from('milk_collections').select('*', { count: 'exact', head: true }),
-    supabase
-      .from('milk_collections')
-      .select('*', { count: 'exact', head: true })
-      .gte('created_at', new Date().toISOString().split('T')[0]),
-    supabase.from('deliveries').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
-    supabase
-      .from('routes')
-      .select('*', { count: 'exact', head: true })
-      .eq('is_active', true),
-    supabase.from('suppliers').select('*', { count: 'exact', head: true }),
-    supabase.from('shops').select('*', { count: 'exact', head: true }),
+    adminDb.collection('milk_collections').count().get(),
+    adminDb.collection('milk_collections').where('created_at', '>=', todayStr).count().get(),
+    adminDb.collection('deliveries').where('status', '==', 'pending').count().get(),
+    adminDb.collection('routes').where('is_active', '==', true).count().get(),
+    adminDb.collection('suppliers').count().get(),
+    adminDb.collection('shops').count().get(),
   ])
 
-  // Get recent collections
-  const { data: recentCollections } = await supabase
-    .from('milk_collections')
-    .select('*, suppliers(name), app_users(name)')
-    .order('created_at', { ascending: false })
-    .limit(5)
+  const totalCollections = totalCollectionsSnap.data().count
+  const todayCollections = todayCollectionsSnap.data().count
+  const pendingDeliveries = pendingDeliveriesSnap.data().count
+  const activeRoutes = activeRoutesSnap.data().count
+  const totalSuppliers = totalSuppliersSnap.data().count
+  const totalShops = totalShopsSnap.data().count
 
-  // Get pending deliveries
-  const { data: pendingDeliveriesData } = await supabase
-    .from('deliveries')
-    .select('*, shops(name), routes(name)')
-    .eq('status', 'pending')
+  // Get recent collections with supplier and operator names
+  const recentCollectionsSnap = await adminDb
+    .collection('milk_collections')
+    .orderBy('created_at', 'desc')
     .limit(5)
+    .get()
+
+  const recentCollections = await Promise.all(
+    recentCollectionsSnap.docs.map(async (d) => {
+      const data: any = { id: d.id, ...d.data() }
+      if (data.supplier_id) {
+        const supplierSnap = await adminDb.collection('suppliers').doc(data.supplier_id).get()
+        data.suppliers = supplierSnap.exists ? supplierSnap.data() : null
+      }
+      if (data.operator_user_id) {
+        const userSnap = await adminDb.collection('app_users').doc(data.operator_user_id).get()
+        data.app_users = userSnap.exists ? userSnap.data() : null
+      }
+      return data
+    })
+  )
+
+  // Get pending deliveries with shop and route names
+  const pendingDeliveriesSnap2 = await adminDb
+    .collection('deliveries')
+    .where('status', '==', 'pending')
+    .limit(5)
+    .get()
+
+  const pendingDeliveriesData = await Promise.all(
+    pendingDeliveriesSnap2.docs.map(async (d) => {
+      const data: any = { id: d.id, ...d.data() }
+      if (data.shop_id) {
+        const shopSnap = await adminDb.collection('shops').doc(data.shop_id).get()
+        data.shops = shopSnap.exists ? shopSnap.data() : null
+      }
+      if (data.route_id) {
+        const routeSnap = await adminDb.collection('routes').doc(data.route_id).get()
+        data.routes = routeSnap.exists ? routeSnap.data() : null
+      }
+      return data
+    })
+  )
 
   const stats = [
     { label: 'Total Collections', value: totalCollections || 0, icon: '🥛', color: 'bg-blue-500' },

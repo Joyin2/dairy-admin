@@ -1,11 +1,11 @@
 'use client'
 
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, orderBy, doc, getDoc } from 'firebase/firestore'
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 
 export default function DispatchPage() {
-  const supabase = createClient()
   const [allocations, setAllocations] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState('')
@@ -28,38 +28,30 @@ export default function DispatchPage() {
   const fetchAllocations = async () => {
     setLoading(true)
     try {
-      // First fetch allocations
-      let query = supabase
-        .from('agent_stock_allocations')
-        .select('*')
-        .order('created_at', { ascending: false })
+      const constraints: any[] = [orderBy('created_at', 'desc')]
+      if (statusFilter) constraints.push(where('status', '==', statusFilter))
 
-      if (statusFilter) {
-        query = query.eq('status', statusFilter)
-      }
+      const allocSnap = await getDocs(query(collection(db, 'agent_stock_allocations'), ...constraints))
+      const allocData = allocSnap.docs.map(d => ({ id: d.id, ...d.data() }))
 
-      const { data: allocData, error: allocError } = await query
-      if (allocError) {
-        console.error('Error fetching allocations:', JSON.stringify(allocError))
-        setLoading(false)
-        return
-      }
-
-      // Enrich with agent info, created_by info, and items
+      // Enrich each allocation with agent info, creator info, and items
       const enriched = await Promise.all(
-        (allocData || []).map(async (alloc: any) => {
-          const [agentRes, creatorRes, itemsRes] = await Promise.all([
-            supabase.from('app_users').select('name, email, phone').eq('id', alloc.agent_id).single(),
+        allocData.map(async (alloc: any) => {
+          const [agentSnap, creatorSnap, itemsSnap] = await Promise.all([
+            getDoc(doc(db, 'app_users', alloc.agent_id)),
             alloc.created_by
-              ? supabase.from('app_users').select('name').eq('id', alloc.created_by).single()
-              : Promise.resolve({ data: null }),
-            supabase.from('agent_stock_items').select('id, product_name, batch_number, packaging_type, package_size, quantity_allocated, quantity_sold, quantity_returned, unit').eq('allocation_id', alloc.id),
+              ? getDoc(doc(db, 'app_users', alloc.created_by))
+              : Promise.resolve(null),
+            getDocs(query(
+              collection(db, 'agent_stock_items'),
+              where('allocation_id', '==', alloc.id)
+            )),
           ])
           return {
             ...alloc,
-            agent: agentRes.data,
-            created_by_user: creatorRes.data,
-            items: itemsRes.data || [],
+            agent: agentSnap.exists() ? agentSnap.data() : null,
+            created_by_user: creatorSnap?.exists() ? creatorSnap.data() : null,
+            items: itemsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
           }
         })
       )
@@ -73,38 +65,31 @@ export default function DispatchPage() {
 
   const fetchSummary = async () => {
     try {
-      // Get all allocations with items
-      const { data: allAllocs } = await supabase
-        .from('agent_stock_allocations')
-        .select('id, agent_id, status')
+      const [allAllocsSnap, allItemsSnap, deliveriesSnap, salesSnap] = await Promise.all([
+        getDocs(collection(db, 'agent_stock_allocations')),
+        getDocs(collection(db, 'agent_stock_items')),
+        getDocs(query(
+          collection(db, 'deliveries'),
+          where('status', 'in', ['delivered', 'partial'])
+        )),
+        getDocs(query(collection(db, 'delivery_sales'), orderBy('batch_number'))),
+      ])
 
-      const { data: allItems } = await supabase
-        .from('agent_stock_items')
-        .select('id, allocation_id, product_name, batch_number, quantity_allocated, quantity_sold, quantity_returned, unit')
+      const allocs = allAllocsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+      const items = allItemsSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[]
+      const deliveries = deliveriesSnap.docs.map(d => d.data()) as any[]
+      const sales = salesSnap.docs.map(d => d.data()) as any[]
 
-      // Get cash collected from deliveries
-      const { data: deliveryData } = await supabase
-        .from('deliveries')
-        .select('expected_amount, collected_amount, shop_id')
-        .in('status', ['delivered', 'partial'])
-
-      // Get batch-wise sales
-      const { data: salesData } = await supabase
-        .from('delivery_sales')
-        .select('batch_number, product_name, quantity_sold, total_amount, unit')
-        .order('batch_number')
-
-      const items = allItems || []
-      const allocs = allAllocs || []
-      const deliveries = deliveryData || []
-      const sales = salesData || []
-
-      const totalAllocated = items.reduce((s: number, i: any) => s + parseFloat(i.quantity_allocated || 0), 0)
-      const totalSold = items.reduce((s: number, i: any) => s + parseFloat(i.quantity_sold || 0), 0)
-      const totalReturned = items.reduce((s: number, i: any) => s + parseFloat(i.quantity_returned || 0), 0)
-      const totalCash = deliveries.reduce((s: number, d: any) => s + parseFloat(String(d.collected_amount || 0)), 0)
-      const totalExpected = deliveries.reduce((s: number, d: any) => s + parseFloat(String(d.expected_amount || 0)), 0)
-      const activeAgentIds = new Set(allocs.filter((a: any) => ['picked_up', 'in_delivery'].includes(a.status)).map((a: any) => a.agent_id))
+      const totalAllocated = items.reduce((s, i) => s + parseFloat(i.quantity_allocated || 0), 0)
+      const totalSold = items.reduce((s, i) => s + parseFloat(i.quantity_sold || 0), 0)
+      const totalReturned = items.reduce((s, i) => s + parseFloat(i.quantity_returned || 0), 0)
+      const totalCash = deliveries.reduce((s, d) => s + parseFloat(String(d.collected_amount || 0)), 0)
+      const totalExpected = deliveries.reduce((s, d) => s + parseFloat(String(d.expected_amount || 0)), 0)
+      const activeAgentIds = new Set(
+        allocs
+          .filter((a: any) => ['picked_up', 'in_delivery'].includes(a.status))
+          .map((a: any) => a.agent_id)
+      )
 
       // Aggregate sales by batch
       const batchMap: Record<string, { batch: string; product: string; qtySold: number; revenue: number; unit: string }> = {}

@@ -1,13 +1,14 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { db, auth } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, limit, addDoc } from 'firebase/firestore'
 import { useRouter } from 'next/navigation'
 
 export default function CreateShopPage() {
   const router = useRouter()
-  const supabase = createClient()
   const [routes, setRoutes] = useState<any[]>([])
+  const [agentMap, setAgentMap] = useState<Record<string, string>>({})
   const [formData, setFormData] = useState({
     name: '',
     owner_name: '',
@@ -21,6 +22,8 @@ export default function CreateShopPage() {
     gst_number: '',
     pan_number: '',
     shop_type: 'retail',
+    retail_rate: '',
+    wholesale_rate: '',
     credit_limit: '',
     payment_terms: 'immediate',
     route_id: '',
@@ -34,19 +37,31 @@ export default function CreateShopPage() {
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [shopTypeOther, setShopTypeOther] = useState('')
+  const [paymentTermsOther, setPaymentTermsOther] = useState('')
 
   useEffect(() => {
     const fetchRoutes = async () => {
-      const { data } = await supabase
-        .from('routes')
-        .select('id, name, area, is_active')
-        .eq('is_active', true)
-        .order('name')
-        .limit(50)
-      setRoutes(data || [])
+      const snap = await getDocs(query(
+        collection(db, 'routes'),
+        where('is_active', '==', true),
+        limit(50)
+      ))
+      const routeList = snap.docs.map(d => ({ id: d.id, ...d.data() })) as any[]
+      routeList.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+      setRoutes(routeList)
+
+      // Fetch agent names for route dropdown
+      const agentIds = [...new Set(routeList.map((r: any) => r.agent_id).filter(Boolean))]
+      if (agentIds.length > 0) {
+        const agentSnap = await getDocs(query(collection(db, 'app_users'), where('__name__', 'in', agentIds)))
+        const map: Record<string, string> = {}
+        agentSnap.docs.forEach(d => { map[d.id] = (d.data() as any).name || 'Unknown Agent' })
+        setAgentMap(map)
+      }
     }
     fetchRoutes()
-  }, [supabase])
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -54,16 +69,14 @@ export default function CreateShopPage() {
     setError(null)
 
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      
-      // Get app_users.id from auth_uid
-      const { data: appUser } = await supabase
-        .from('app_users')
-        .select('id')
-        .eq('auth_uid', user?.id)
-        .single()
+      const user = auth.currentUser
+      let appUserId = null
+      if (user) {
+        const appUserSnap = await getDocs(query(collection(db, 'app_users'), where('auth_uid', '==', user.uid)))
+        if (!appUserSnap.empty) appUserId = appUserSnap.docs[0].id
+      }
 
-      const { error: insertError } = await supabase.from('shops').insert({
+      await addDoc(collection(db, 'shops'), {
         name: formData.name,
         owner_name: formData.owner_name,
         contact: formData.contact,
@@ -75,14 +88,18 @@ export default function CreateShopPage() {
         pincode: formData.pincode,
         gst_number: formData.gst_number,
         pan_number: formData.pan_number,
-        shop_type: formData.shop_type,
+        shop_type: formData.shop_type === 'other' ? shopTypeOther : formData.shop_type,
+        retail_rate: formData.retail_rate ? parseFloat(formData.retail_rate) : null,
+        wholesale_rate: formData.wholesale_rate ? parseFloat(formData.wholesale_rate) : null,
         credit_limit: formData.credit_limit,
-        payment_terms: formData.payment_terms,
+        payment_terms: formData.payment_terms === 'other' ? paymentTermsOther : formData.payment_terms,
         route_id: formData.route_id || null,
         bank_account: formData.bank_account,
-        created_by: appUser?.id,
+        status: 'approved',
+        created_by: appUserId,
+        created_at: new Date().toISOString(),
       })
-      if (insertError) throw insertError
+
       router.push('/dashboard/shops')
       router.refresh()
     } catch (err: any) {
@@ -98,7 +115,7 @@ export default function CreateShopPage() {
       <div className="bg-white rounded-lg shadow p-6">
         <form onSubmit={handleSubmit} className="space-y-6">
           {error && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">{error}</div>}
-          
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Shop Name <span className="text-red-500">*</span></label>
@@ -135,7 +152,7 @@ export default function CreateShopPage() {
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
               placeholder="shop@example.com" />
           </div>
-          
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Address</label>
             <textarea rows={2} value={formData.address} onChange={(e) => setFormData({ ...formData, address: e.target.value })}
@@ -188,7 +205,32 @@ export default function CreateShopPage() {
                 <option value="retail">Retail</option>
                 <option value="wholesale">Wholesale</option>
                 <option value="distributor">Distributor</option>
+                <option value="other">Other</option>
               </select>
+              {formData.shop_type === 'other' && (
+                <input
+                  type="text"
+                  value={shopTypeOther}
+                  onChange={(e) => setShopTypeOther(e.target.value)}
+                  className="w-full mt-2 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                  placeholder="Specify shop type"
+                  required
+                />
+              )}
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Retail Rate (₹/unit)</label>
+              <input type="number" step="0.01" value={formData.retail_rate} onChange={(e) => setFormData({ ...formData, retail_rate: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                placeholder="e.g. 28.00" />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Wholesale Rate (₹/unit)</label>
+              <input type="number" step="0.01" value={formData.wholesale_rate} onChange={(e) => setFormData({ ...formData, wholesale_rate: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                placeholder="e.g. 25.00" />
             </div>
 
             <div>
@@ -206,21 +248,32 @@ export default function CreateShopPage() {
                 <option value="7_days">7 Days</option>
                 <option value="15_days">15 Days</option>
                 <option value="30_days">30 Days</option>
+                <option value="other">Other</option>
               </select>
+              {formData.payment_terms === 'other' && (
+                <input
+                  type="text"
+                  value={paymentTermsOther}
+                  onChange={(e) => setPaymentTermsOther(e.target.value)}
+                  className="w-full mt-2 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+                  placeholder="Specify payment terms"
+                  required
+                />
+              )}
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Assign to Route</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Assign to Route / Agent</label>
               <select value={formData.route_id} onChange={(e) => setFormData({ ...formData, route_id: e.target.value })}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white">
                 <option value="">No Route</option>
                 {routes.map(route => (
                   <option key={route.id} value={route.id}>
-                    {route.name} {route.area ? `(${route.area})` : ''}
+                    {route.name}{route.area ? ` (${route.area})` : ''}{agentMap[route.agent_id] ? ` — ${agentMap[route.agent_id]}` : ''}
                   </option>
                 ))}
               </select>
-              <p className="text-xs text-gray-500 mt-1">Each shop can belong to only one route at a time</p>
+              <p className="text-xs text-gray-500 mt-1">Assigning a route also assigns the shop to that route's delivery agent</p>
             </div>
           </div>
 

@@ -3,7 +3,8 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { auth } from '@/lib/firebase/client'
+import { signOut } from 'firebase/auth'
 
 interface DashboardNavProps {
   user: any
@@ -12,11 +13,11 @@ interface DashboardNavProps {
 export default function DashboardNav({ user }: DashboardNavProps) {
   const pathname = usePathname()
   const router = useRouter()
-  const supabase = createClient()
   const [isMenuOpen, setIsMenuOpen] = useState(false)
 
   const handleLogout = async () => {
-    await supabase.auth.signOut()
+    await signOut(auth)
+    await fetch('/api/session', { method: 'DELETE' })
     router.push('/login')
     router.refresh()
   }

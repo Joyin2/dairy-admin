@@ -1,13 +1,14 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, where, getDocs, orderBy, addDoc, serverTimestamp } from 'firebase/firestore'
+import { getAuth } from 'firebase/auth'
 import { useRouter } from 'next/navigation'
 
 export default function CreateCollectionPage() {
   const router = useRouter()
-  const supabase = createClient()
-  
+
   const [suppliers, setSuppliers] = useState<any[]>([])
   const [formData, setFormData] = useState({
     supplier_id: '',
@@ -23,11 +24,12 @@ export default function CreateCollectionPage() {
 
   useEffect(() => {
     const fetchSuppliers = async () => {
-      const { data } = await supabase.from('suppliers').select('id, name').order('name')
-      setSuppliers(data || [])
+      const q = query(collection(db, 'suppliers'), orderBy('name'))
+      const snap = await getDocs(q)
+      setSuppliers(snap.docs.map(d => ({ id: d.id, ...d.data() })))
     }
     fetchSuppliers()
-  }, [supabase])
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -35,33 +37,36 @@ export default function CreateCollectionPage() {
     setError(null)
 
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      
-      // Get app_users.id from auth_uid
-      const { data: appUser } = await supabase
-        .from('app_users')
-        .select('id')
-        .eq('auth_uid', user?.id)
-        .single()
-      
-      const { error: insertError } = await supabase
-        .from('milk_collections')
-        .insert({
-          supplier_id: formData.supplier_id,
-          operator_user_id: appUser?.id,
-          qty_liters: parseFloat(formData.qty_liters),
-          fat: formData.fat ? parseFloat(formData.fat) : null,
-          snf: formData.snf ? parseFloat(formData.snf) : null,
-          price_per_liter: formData.price_per_liter ? parseFloat(formData.price_per_liter) : null,
-          photo_url: formData.photo_url || null,
-          qc_status: formData.qc_status,
-          status: 'new',
-        })
+      const auth = getAuth()
+      const currentUser = auth.currentUser
 
-      if (insertError) throw insertError
+      // Get app_users record by matching auth uid
+      let appUserId: string | null = null
+      if (currentUser) {
+        const userQ = query(
+          collection(db, 'app_users'),
+          where('auth_uid', '==', currentUser.uid)
+        )
+        const userSnap = await getDocs(userQ)
+        if (!userSnap.empty) {
+          appUserId = userSnap.docs[0].id
+        }
+      }
+
+      await addDoc(collection(db, 'milk_collections'), {
+        supplier_id: formData.supplier_id,
+        operator_user_id: appUserId,
+        qty_liters: parseFloat(formData.qty_liters),
+        fat: formData.fat ? parseFloat(formData.fat) : null,
+        snf: formData.snf ? parseFloat(formData.snf) : null,
+        price_per_liter: formData.price_per_liter ? parseFloat(formData.price_per_liter) : null,
+        photo_url: formData.photo_url || null,
+        qc_status: formData.qc_status,
+        status: 'new',
+        created_at: serverTimestamp(),
+      })
 
       router.push('/dashboard/collections')
-      router.refresh()
     } catch (err: any) {
       setError(err.message || 'Failed to create collection')
     } finally {
@@ -140,7 +145,7 @@ export default function CreateCollectionPage() {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Price per Liter (₹)
+              Price per Liter (&#8377;)
             </label>
             <input
               type="number"

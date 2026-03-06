@@ -1,10 +1,10 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
+import { db } from '@/lib/firebase/client'
+import { collection, query, where, getDocs } from 'firebase/firestore'
 
 export default function ReportsPage() {
-  const supabase = createClient()
   const [stats, setStats] = useState({
     totalCollections: 0,
     totalMilk: 0,
@@ -22,35 +22,38 @@ export default function ReportsPage() {
   useEffect(() => {
     const fetchStats = async () => {
       setLoading(true)
-      
-      const [collectionsRes, deliveriesRes, paymentsRes] = await Promise.all([
-        supabase
-          .from('milk_collections')
-          .select('qty_liters, fat, snf')
-          .gte('created_at', dateRange.start)
-          .lte('created_at', dateRange.end + 'T23:59:59'),
-        supabase
-          .from('deliveries')
-          .select('delivered_qty, collected_amount')
-          .gte('created_at', dateRange.start)
-          .lte('created_at', dateRange.end + 'T23:59:59'),
-        supabase
-          .from('ledger_entries')
-          .select('amount')
-          .gte('created_at', dateRange.start)
-          .lte('created_at', dateRange.end + 'T23:59:59'),
+
+      const startStr = dateRange.start
+      const endStr = dateRange.end + 'T23:59:59'
+
+      const [collectionsSnap, deliveriesSnap, paymentsSnap] = await Promise.all([
+        getDocs(query(
+          collection(db, 'milk_collections'),
+          where('created_at', '>=', startStr),
+          where('created_at', '<=', endStr)
+        )),
+        getDocs(query(
+          collection(db, 'deliveries'),
+          where('created_at', '>=', startStr),
+          where('created_at', '<=', endStr)
+        )),
+        getDocs(query(
+          collection(db, 'ledger_entries'),
+          where('created_at', '>=', startStr),
+          where('created_at', '<=', endStr)
+        )),
       ])
 
-      const collections = collectionsRes.data || []
-      const deliveries = deliveriesRes.data || []
-      const payments = paymentsRes.data || []
+      const collections = collectionsSnap.docs.map(d => d.data())
+      const deliveries = deliveriesSnap.docs.map(d => d.data())
+      const payments = paymentsSnap.docs.map(d => d.data())
 
       const totalMilk = collections.reduce((sum, c) => sum + (parseFloat(c.qty_liters) || 0), 0)
-      const avgFat = collections.length > 0 
-        ? collections.reduce((sum, c) => sum + (parseFloat(c.fat) || 0), 0) / collections.length 
+      const avgFat = collections.length > 0
+        ? collections.reduce((sum, c) => sum + (parseFloat(c.fat) || 0), 0) / collections.length
         : 0
-      const avgSnf = collections.length > 0 
-        ? collections.reduce((sum, c) => sum + (parseFloat(c.snf) || 0), 0) / collections.length 
+      const avgSnf = collections.length > 0
+        ? collections.reduce((sum, c) => sum + (parseFloat(c.snf) || 0), 0) / collections.length
         : 0
       const totalRevenue = payments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0)
 
@@ -65,7 +68,7 @@ export default function ReportsPage() {
       setLoading(false)
     }
     fetchStats()
-  }, [supabase, dateRange])
+  }, [dateRange])
 
   return (
     <div className="space-y-6">
@@ -139,7 +142,7 @@ export default function ReportsPage() {
             </div>
             <div className="bg-white rounded-lg shadow p-4">
               <p className="text-sm text-gray-500">Revenue</p>
-              <p className="text-2xl font-bold text-indigo-600">₹{stats.totalRevenue.toLocaleString()}</p>
+              <p className="text-2xl font-bold text-indigo-600">&#8377;{stats.totalRevenue.toLocaleString()}</p>
             </div>
             <div className="bg-white rounded-lg shadow p-4">
               <p className="text-sm text-gray-500">Avg Fat %</p>
@@ -184,12 +187,12 @@ export default function ReportsPage() {
                 </div>
                 <div className="flex justify-between items-center py-2 border-b">
                   <span className="text-gray-600">Total Revenue</span>
-                  <span className="font-semibold text-gray-900">₹{stats.totalRevenue.toLocaleString()}</span>
+                  <span className="font-semibold text-gray-900">&#8377;{stats.totalRevenue.toLocaleString()}</span>
                 </div>
                 <div className="flex justify-between items-center py-2 border-b">
                   <span className="text-gray-600">Avg per Delivery</span>
                   <span className="font-semibold text-gray-900">
-                    ₹{stats.totalDeliveries > 0 ? (stats.totalRevenue / stats.totalDeliveries).toFixed(2) : 0}
+                    &#8377;{stats.totalDeliveries > 0 ? (stats.totalRevenue / stats.totalDeliveries).toFixed(2) : 0}
                   </span>
                 </div>
                 <div className="flex justify-between items-center py-2">
