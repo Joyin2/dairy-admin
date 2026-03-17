@@ -337,8 +337,8 @@ export default function CreateDispatchPage() {
                           <div className="flex items-center gap-2">
                             <input
                               type="number"
-                              step="0.1"
-                              min="0.1"
+                              step="1"
+                              min="1"
                               max={item.quantity}
                               value={item.allocateQty}
                               onChange={(e) => updateQty(item.id, e.target.value)}

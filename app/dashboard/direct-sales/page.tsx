@@ -2,6 +2,7 @@
 
 import { db } from '@/lib/firebase/client'
 import { collection, query, where, getDocs, orderBy } from 'firebase/firestore'
+// Note: orderBy kept for fetchAgents; direct sales queries use client-side sort
 import { useEffect, useState } from 'react'
 
 interface DirectSale {
@@ -14,8 +15,6 @@ interface DirectSale {
   road_area: string
   house_no: string | null
   customer_type: string
-  total_items: number
-  total_quantity: number
   total_amount: number
   cash_collected: number
   due_amount: number
@@ -112,19 +111,14 @@ export default function DirectSalesPage() {
   const fetchData = async () => {
     setLoading(true)
     try {
-      // Fetch direct sales with filters
-      let salesQuery = query(
-        collection(db, 'direct_sales'),
-        orderBy('created_at', 'desc')
-      )
-
+      // Fetch direct deliveries with filters
       // Apply filters: Firestore can only filter by equality/range, no ilike
       // We apply date and agent filters server-side; road filter client-side
-      const constraints: any[] = [orderBy('created_at', 'desc')]
+      const constraints: any[] = [where('delivery_type', '==', 'direct')]
       if (dateFilter) constraints.push(where('sale_date', '==', dateFilter))
       if (agentFilter) constraints.push(where('agent_id', '==', agentFilter))
 
-      salesQuery = query(collection(db, 'direct_sales'), ...constraints)
+      const salesQuery = query(collection(db, 'deliveries'), ...constraints)
       const salesSnap = await getDocs(salesQuery)
       let salesData: any[] = salesSnap.docs.map(d => ({ id: d.id, ...d.data() }))
 
@@ -133,6 +127,9 @@ export default function DirectSalesPage() {
         const lowerRoad = roadFilter.toLowerCase()
         salesData = salesData.filter(s => s.road_area?.toLowerCase().includes(lowerRoad))
       }
+
+      // Client-side sort by created_at desc
+      salesData.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
 
       // Collect unique agent/route IDs
       const agentIds = new Set<string>()
@@ -172,18 +169,20 @@ export default function DirectSalesPage() {
           chunks.push(saleIds.slice(i, i + 30))
         }
         for (const chunk of chunks) {
-          const itemsQ = query(collection(db, 'direct_sale_items'), where('direct_sale_id', 'in', chunk))
+          const itemsQ = query(collection(db, 'delivery_sales'), where('delivery_id', 'in', chunk))
           const itemsSnap = await getDocs(itemsQ)
           for (const d of itemsSnap.docs) {
             const item = { id: d.id, ...d.data() } as any
-            if (!itemsMap[item.direct_sale_id]) itemsMap[item.direct_sale_id] = []
-            itemsMap[item.direct_sale_id].push(item)
+            if (!itemsMap[item.delivery_id]) itemsMap[item.delivery_id] = []
+            itemsMap[item.delivery_id].push(item)
           }
         }
       }
 
       const enriched: DirectSale[] = salesData.map(sale => ({
         ...sale,
+        total_amount: sale.expected_amount,
+        cash_collected: sale.collected_amount,
         agent_name: agentMap[sale.agent_id] || 'Unknown',
         route_name: sale.route_id ? routeMap[sale.route_id] || '-' : '-',
         items: itemsMap[sale.id] || [],

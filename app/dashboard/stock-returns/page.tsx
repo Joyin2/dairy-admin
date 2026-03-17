@@ -167,9 +167,9 @@ export default function StockReturnsPage() {
         reviewed_at: new Date().toISOString(),
       })
 
-      // Mark allocation as completed now that return is approved
+      // Mark allocation as returned now that return is approved
       await updateDoc(doc(db, 'agent_stock_allocations', returnRequest.allocation_id), {
-        status: 'completed',
+        status: 'returned',
         completed_at: new Date().toISOString(),
       })
 
@@ -561,9 +561,9 @@ function ReviewModal({
         reviewed_at: new Date().toISOString(),
       })
 
-      // Mark allocation as completed now that return is processed
+      // Mark allocation as returned now that return is processed
       await updateDoc(doc(db, 'agent_stock_allocations', returnRequest.allocation_id), {
-        status: 'completed',
+        status: 'returned',
         completed_at: new Date().toISOString(),
       })
 

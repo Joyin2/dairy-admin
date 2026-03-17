@@ -6,8 +6,8 @@ import { useEffect, useState } from 'react'
 
 interface ProductReturn {
   id: string
-  shop_id: string
-  route_id: string
+  shop_id: string | null
+  route_id: string | null
   agent_id: string
   allocation_id: string | null
   return_date: string
@@ -21,6 +21,9 @@ interface ProductReturn {
   reviewed_by: string | null
   reviewed_at: string | null
   created_at: string
+  road_area?: string | null
+  customer_name?: string | null
+  customer_mobile?: string | null
   shop?: { name: string; owner_name: string; city: string }
   route?: { name: string; area: string }
   agent?: { name: string; email: string }
@@ -401,12 +404,16 @@ export default function ProductReturnsPage() {
                       <div>
                         <div className="flex items-center gap-3 mb-1">
                           <h3 className="text-lg font-semibold text-gray-900">
-                            {ret.shop?.name || 'Unknown Shop'}
+                            {ret.return_type === 'direct_sale'
+                              ? (ret.customer_name || 'Walk-in Customer')
+                              : (ret.shop?.name || 'Unknown Shop')}
                           </h3>
                           {getStatusBadge(ret.status)}
                         </div>
                         <p className="text-sm text-gray-500">
-                          Agent: {ret.agent?.name || 'Unknown'} | Route: {ret.route?.name || '-'}
+                          {ret.return_type === 'direct_sale'
+                            ? `Road: ${ret.road_area || '-'} | Agent: ${ret.agent?.name || 'Unknown'}`
+                            : `Agent: ${ret.agent?.name || 'Unknown'} | Route: ${ret.route?.name || '-'}`}
                         </p>
                         <p className="text-xs text-gray-400 mt-1">
                           {new Date(ret.created_at).toLocaleString()} | Type: {ret.return_type === 'sale_return' ? 'Sale Return' : 'Delivery Return'}

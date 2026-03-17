@@ -171,7 +171,7 @@ export default function CollectionsPage() {
               collections.map((collection: any) => (
                 <tr key={collection.id} className="hover:bg-gray-50">
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {new Date(collection.created_at).toLocaleString()}
+                    {collection.created_at?.toDate?.()?.toLocaleString() ?? new Date(collection.created_at).toLocaleString()}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900">
                     {collection.suppliers?.name || 'Unknown'}

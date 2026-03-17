@@ -47,7 +47,6 @@ export default function DashboardSidebar({ user }: DashboardSidebarProps) {
     { name: 'Product Returns', href: '/dashboard/product-returns', icon: '↩️', section: 'delivery' },
     { name: 'Sales History', href: '/dashboard/sales-history', icon: '📋', section: 'delivery' },
     { name: 'Direct Sales', href: '/dashboard/direct-sales', icon: '🏘️', section: 'delivery' },
-    
     { name: 'Finance', section: 'header' },
     { name: 'Outstanding', href: '/dashboard/outstanding', icon: '⚠️', section: 'finance' },
     { name: 'Payments', href: '/dashboard/payments', icon: '💰', section: 'finance' },

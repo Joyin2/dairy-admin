@@ -118,7 +118,7 @@ export default function CollectionDetailPage() {
           <div>
             <label className="block text-sm font-medium text-gray-600 mb-1">Date/Time</label>
             <div className="text-lg font-semibold text-gray-900">
-              {new Date(collection.created_at).toLocaleString()}
+              {collection.created_at?.toDate?.()?.toLocaleString() ?? new Date(collection.created_at).toLocaleString()}
             </div>
           </div>
 

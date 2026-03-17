@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { db } from '@/lib/firebase/client'
-import { collection, query, where, getDocs, orderBy, addDoc, serverTimestamp } from 'firebase/firestore'
+import { collection, query, where, getDocs, orderBy, addDoc } from 'firebase/firestore'
 import { getAuth } from 'firebase/auth'
 import { useRouter } from 'next/navigation'
 
@@ -18,6 +18,7 @@ export default function CreateCollectionPage() {
     price_per_liter: '',
     photo_url: '',
     qc_status: 'pending' as 'pending' | 'approved' | 'rejected',
+    collection_date: new Date().toISOString().slice(0, 16),
   })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -63,7 +64,7 @@ export default function CreateCollectionPage() {
         photo_url: formData.photo_url || null,
         qc_status: formData.qc_status,
         status: 'new',
-        created_at: serverTimestamp(),
+        created_at: new Date(formData.collection_date),
       })
 
       router.push('/dashboard/collections')
@@ -103,6 +104,19 @@ export default function CreateCollectionPage() {
                 </option>
               ))}
             </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Collection Date & Time <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="datetime-local"
+              required
+              value={formData.collection_date}
+              onChange={(e) => setFormData({ ...formData, collection_date: e.target.value })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
+            />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

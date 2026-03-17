@@ -26,7 +26,7 @@ export default function CreateRoutePage() {
       const [agentsSnap, shopsSnap, productsSnap] = await Promise.all([
         getDocs(query(collection(db, 'app_users'), where('role', '==', 'delivery_agent'), where('status', '==', 'active'), orderBy('name'))),
         getDocs(query(collection(db, 'shops'), where('route_id', '==', null), where('status', '==', 'approved'), orderBy('name'))),
-        getDocs(query(collection(db, 'products'), orderBy('name'))),
+        getDocs(query(collection(db, 'production_inventory'), orderBy('product_name'))),
       ])
       setAgents(agentsSnap.docs.map(d => ({ id: d.id, ...d.data() })))
       setShops(shopsSnap.docs.map(d => ({ id: d.id, ...d.data() })))
@@ -61,7 +61,7 @@ export default function CreateRoutePage() {
         updatedProducts[productIndex] = {
           ...updatedProducts[productIndex],
           product_id: value,
-          product_name: product?.name || ''
+          product_name: product?.product_name || ''
         }
       } else {
         updatedProducts[productIndex] = { ...updatedProducts[productIndex], [field]: value }
@@ -317,7 +317,7 @@ export default function CreateRoutePage() {
                             >
                               <option value="">Select product...</option>
                               {products.map(p => (
-                                <option key={p.id} value={p.id}>{p.name} ({p.sku || p.uom})</option>
+                                <option key={p.id} value={p.id}>{p.product_name} {p.batch_number ? `[${p.batch_number}]` : ''} ({p.unit})</option>
                               ))}
                             </select>
                             <input

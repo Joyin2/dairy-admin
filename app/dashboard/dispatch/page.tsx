@@ -28,8 +28,12 @@ export default function DispatchPage() {
   const fetchAllocations = async () => {
     setLoading(true)
     try {
-      const constraints: any[] = [orderBy('created_at', 'desc')]
-      if (statusFilter) constraints.push(where('status', '==', statusFilter))
+      const constraints: any[] = []
+      if (statusFilter) {
+        constraints.push(where('status', '==', statusFilter))
+      } else {
+        constraints.push(orderBy('created_at', 'desc'))
+      }
 
       const allocSnap = await getDocs(query(collection(db, 'agent_stock_allocations'), ...constraints))
       const allocData = allocSnap.docs.map(d => ({ id: d.id, ...d.data() }))
@@ -56,7 +60,12 @@ export default function DispatchPage() {
         })
       )
 
-      setAllocations(enriched)
+      const sorted = enriched.sort((a: any, b: any) => {
+        const aTime = a.created_at?.seconds ?? 0
+        const bTime = b.created_at?.seconds ?? 0
+        return bTime - aTime
+      })
+      setAllocations(sorted)
     } catch (err: any) {
       console.error('Error fetching allocations:', err)
     }

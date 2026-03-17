@@ -152,7 +152,7 @@ export default function DispatchDetailPage() {
           </div>
           <h1 className="text-3xl font-bold text-gray-900">Dispatch Details</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Created {new Date(allocation.created_at).toLocaleString()}
+            Created {(allocation.created_at?.toDate?.() ?? new Date(allocation.created_at)).toLocaleString()}
             {allocation.created_by_user && ` by ${allocation.created_by_user.name}`}
           </p>
         </div>
@@ -290,7 +290,7 @@ export default function DispatchDetailPage() {
                       {parseFloat(sale.total_amount || 0).toFixed(2)}
                     </td>
                     <td className="px-6 py-4 text-sm text-gray-500">
-                      {new Date(sale.created_at).toLocaleString()}
+                      {(sale.created_at?.toDate?.() ?? new Date(sale.created_at)).toLocaleString()}
                     </td>
                   </tr>
                 )
@@ -308,7 +308,7 @@ export default function DispatchDetailPage() {
             <div className="w-3 h-3 rounded-full bg-blue-500 mt-1.5"></div>
             <div>
               <p className="text-sm font-medium text-gray-900">Dispatch Created</p>
-              <p className="text-xs text-gray-500">{new Date(allocation.created_at).toLocaleString()}</p>
+              <p className="text-xs text-gray-500">{(allocation.created_at?.toDate?.() ?? new Date(allocation.created_at)).toLocaleString()}</p>
             </div>
           </div>
           {allocation.picked_up_at && (
@@ -320,9 +320,18 @@ export default function DispatchDetailPage() {
               </div>
             </div>
           )}
-          {allocation.completed_at && (
+          {allocation.in_delivery_at && (
             <div className="flex items-start gap-3">
               <div className="w-3 h-3 rounded-full bg-purple-500 mt-1.5"></div>
+              <div>
+                <p className="text-sm font-medium text-gray-900">Delivery Started</p>
+                <p className="text-xs text-gray-500">{new Date(allocation.in_delivery_at).toLocaleString()}</p>
+              </div>
+            </div>
+          )}
+          {allocation.completed_at && (
+            <div className="flex items-start gap-3">
+              <div className="w-3 h-3 rounded-full bg-emerald-500 mt-1.5"></div>
               <div>
                 <p className="text-sm font-medium text-gray-900">Delivery Completed</p>
                 <p className="text-xs text-gray-500">{new Date(allocation.completed_at).toLocaleString()}</p>
